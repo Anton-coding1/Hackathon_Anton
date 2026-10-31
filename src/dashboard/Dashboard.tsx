@@ -5,6 +5,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { BuildingPreset } from "@/data/buildings";
 import type { Activity } from "@/scene";
 import { ControlPanel } from "./ControlPanel";
+import { planChanges, type PlanChange } from "@/data/planChanges";
+import { autoPlan } from "@/data/autoPlan";
+import type { RepairAudit } from "@/contracts/types";
 import { FailurePassport } from "./FailurePassport";
 import { buildPlanSvg, downloadPng, downloadText } from "./planExport";
 import { ResultsPanel } from "./ResultsPanel";
@@ -26,14 +29,10 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
   const [preview, setPreview] = useState<string | null>(null);
   const stress = useStressTest(c.building, stressOn, constraints.liftsRecalled);
   const logBox = useRef<HTMLDivElement>(null);
-  const autoStarted = useRef(false);
-  const startAutopilot = useRef((_: boolean) => {});
-  startAutopilot.current = () => void c.activateAlarm();
-  useEffect(() => {
-    if (!autoplay || autoStarted.current || !c.gemini.checked) return;
-    autoStarted.current = true;
-    setTimeout(() => startAutopilot.current(true), 2500);
-  }, [autoplay, c.gemini.checked]);
+  void autoplay; // the demo never starts by itself: the user presses "Activate fire alarm"
+  const [helpOpen, setHelpOpen] = useState(false);
+  // The plan as built so far: every verified change applied to walls, rooms and shafts.
+  const planned = useMemo(() => planChanges(preset.plan ?? autoPlan(c.building), c.building, c.fixes.map((f) => f.repair)), [preset.plan, c.building, c.fixes]);
 
   useEffect(() => {
     const el = logBox.current;
@@ -50,7 +49,7 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
       : null;
 
   const planSvg = useCallback(() => {
-    const repairs = c.passports.filter((p) => p.repair).map((p) => ({ repair: p.repair!, audit: p.audit, scenario: p.scenario }));
+    const repairs = c.fixes.map((f) => ({ repair: f.repair, audit: { accepted: true } as RepairAudit, scenario: f.scenario }));
     const last = [...c.passports].reverse().find((p) => p.audit?.accepted)?.audit;
     return buildPlanSvg({
       building: c.building,
@@ -129,10 +128,50 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
             <i />
             {statusText}
           </span>
-          <span className="pill mono">{c.scenario.id}</span>
-          <span className={`pill ${c.gemini.configured ? "pill-ai" : "pill-warn"}`} title={c.gemini.configured ? "Gemini agents active" : "Set GEMINI_API_KEY on the server to enable Gemini"}>
-            <i />
-            {!c.gemini.checked ? "Checking Gemini…" : c.gemini.configured ? `${prettyModel(c.gemini.model)}${c.gemini.fastModel ? ` + ${prettyModel(c.gemini.fastModel)}` : ""}` : "Gemini not connected · built-in agents"}
+          <span className="pill-wrap">
+            <button className={`pill ${c.gemini.configured ? "pill-ai" : "pill-warn"}`} onClick={() => setHelpOpen((x) => !x)}>
+              <i />
+              {!c.gemini.checked
+                ? "Checking Gemini 4 Argon…"
+                : c.gemini.configured
+                  ? `${prettyModel(c.gemini.model)} · connected`
+                  : c.gemini.status === "model-unavailable"
+                    ? `Key works · ${c.gemini.model} not enabled`
+                    : c.gemini.status === "invalid-key"
+                      ? "Gemini API key rejected"
+                      : c.gemini.status === "unreachable"
+                        ? "Can't reach Gemini"
+                        : "Argon not connected · add API key"}
+            </button>
+            {helpOpen && (
+              <div className="pill-pop" onClick={() => setHelpOpen(false)}>
+                {c.gemini.configured ? (
+                  <p>
+                    <b>{prettyModel(c.gemini.model)}</b> leads the attacker and defender; <b>{prettyModel(c.gemini.fastModel ?? "")}</b> handles quick follow-ups. Every answer is still checked by the judge.
+                  </p>
+                ) : (
+                  <>
+                    <p>
+                      <b>Why:</b>{" "}
+                      {c.gemini.status === "model-unavailable"
+                        ? `your key works but "${c.gemini.model}" isn't enabled for it.`
+                        : c.gemini.status === "invalid-key"
+                          ? "Google rejected the API key."
+                          : c.gemini.status === "unreachable"
+                            ? "the server couldn't reach Google."
+                            : "the server can't find GEMINI_API_KEY."}{" "}
+                      Built-in agents run meanwhile, and every verdict is identical either way.
+                    </p>
+                    <p>
+                      <b>Fix:</b> in the project folder run
+                    </p>
+                    <code>echo &quot;GEMINI_API_KEY=your-key&quot; &gt; .env.local</code>
+                    {c.gemini.status === "model-unavailable" && <code>echo &quot;GEMINI_MODEL=gemini-3.8-flash&quot; &gt;&gt; .env.local</code>}
+                    <p>then stop the app (Ctrl+C) and run npm run dev again.</p>
+                  </>
+                )}
+              </div>
+            )}
           </span>
           <span className="pill">{preset.sector}</span>
           <button className="pill pill-btn" onClick={() => setPreview(planSvg())}>
@@ -146,7 +185,8 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
           building={c.building}
           scenario={c.preview?.scenario ?? c.scenario}
           result={c.preview?.result ?? c.result}
-          plan={preset.plan}
+          plan={planned.plan}
+          anchors={planned.anchors}
           addedConnectionIds={c.addedIds}
           proposal={proposalConn}
           activity={activity}
@@ -159,6 +199,15 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
         <div className="viewport-tag">
           <b>3D model</b> · {exploded ? "exploded axonometric" : "stacked"} · {stress.done ? `${stress.evaluated.toLocaleString("en-GB")} stress scenarios checked` : `${(stress.perSecond || 0).toLocaleString("en-GB")} scenarios/s`}
         </div>
+        {!c.alarm && !focus && !c.report && c.fixes.length === 0 && (
+          <div className="cta-overlay">
+            <p>Normal day. Everyone can get out. What happens when the fire alarm goes off?</p>
+            <button className="cta-fire" onClick={() => c.activateAlarm()}>
+              <span>🔔</span> Activate fire alarm
+            </button>
+            <small>The AI agents then test every escape route themselves. You don&apos;t choose anything.</small>
+          </div>
+        )}
         {c.alarm && (
           <div className="fire-banner">
             <span className="fire-dot" />
@@ -259,7 +308,7 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
         </section>
       </main>
 
-      {c.report && !preview && <ReportModal c={c} onDownload={onDownload} onPlan={() => setPreview(planSvg())} />}
+      {c.report && !preview && <ReportModal c={c} changes={planned.changes} onDownload={onDownload} onPlan={() => setPreview(planSvg())} />}
 
       {preview && (
         <div className="modal" onClick={() => setPreview(null)}>
@@ -293,7 +342,7 @@ function prettyModel(id: string): string {
   return m ? `Gemini ${m[1]} ${m[2].replace("-", " ").replace(/\b\w/g, (x) => x.toUpperCase())}` : id;
 }
 
-function ReportModal({ c, onDownload, onPlan }: { c: ReturnType<typeof useDemoController>; onDownload: (k: "svg" | "png" | "json") => void; onPlan: () => void }) {
+function ReportModal({ c, changes, onDownload, onPlan }: { c: ReturnType<typeof useDemoController>; changes: PlanChange[]; onDownload: (k: "svg" | "png" | "json") => void; onPlan: () => void }) {
   const r = c.report!;
   const ok = r.status === "fault-free";
   return (
@@ -327,18 +376,19 @@ function ReportModal({ c, onDownload, onPlan }: { c: ReturnType<typeof useDemoCo
                   <div className="fx-scn">
                     <span className="fx-n">{i + 1}</span>
                     <div>
-                      <b>{f.scenario.name}</b>
+                      <b>{f.scenario.name.replace(" (found by exhaustive sweep)", "")}</b>
                       <span>
                         {f.stranded.map((id) => c.building.occupants.find((o) => o.id === id)?.label ?? id).join(", ")} would have been trapped
                       </span>
                     </div>
                   </div>
                   <div className="fx-fix">
-                    <span className="fx-arrow">Introduced</span>
-                    <b>{describeRepair(f.repair)}</b>
-                    <span>
-                      £{f.repair.cost.toLocaleString("en-GB")} · {f.source === "gemini" ? "proposed by Gemini" : f.source === "scripted" ? "scripted proposal" : "deterministic defender"}
-                      {f.rejected ? ` · ${f.rejected} earlier proposal(s) rejected by the judge` : ""} · verified
+                    <span className="fx-arrow">Change {i + 1} · £{f.repair.cost.toLocaleString("en-GB")}</span>
+                    <b>{changes[i]?.title ?? describeRepair(f.repair)}</b>
+                    <span>{changes[i]?.detail}</span>
+                    <span className="fx-src">
+                      {f.source === "gemini" ? "Designed by Gemini 4 Argon" : f.source === "scripted" ? "Scripted proposal" : "Lowest-cost fix found by search"}
+                      {f.rejected ? ` · ${f.rejected} earlier idea(s) rejected by the judge` : ""} · verified
                     </span>
                   </div>
                 </li>

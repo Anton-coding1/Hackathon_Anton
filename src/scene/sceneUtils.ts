@@ -28,6 +28,7 @@ export const FLOOR_FINISH: Record<string, string> = {
   stair: "#e2e5ea",
   ancillary: "#efefef",
   void: "#000000",
+  core: "#dbeafe",
 };
 
 export type Activity = "idle" | "attacking" | "defending" | "auditing";
@@ -53,7 +54,9 @@ export function nodePos(n: RoomNode, exploded: boolean): THREE.Vector3 {
  * Same-floor links are straight. Links between floors become: short flat run on the
  * upper floor, a straight flight along the dominant axis, and a landing to the lower node.
  */
-export function connectionPolyline(c: Connection, nodes: Map<string, RoomNode>, exploded: boolean): THREE.Vector3[] {
+export type Anchor = { foot: [number, number]; head: [number, number] };
+
+export function connectionPolyline(c: Connection, nodes: Map<string, RoomNode>, exploded: boolean, anchors?: Record<string, Anchor>): THREE.Vector3[] {
   const a = nodes.get(c.from);
   const b = nodes.get(c.to);
   if (!a || !b) return [];
@@ -63,6 +66,12 @@ export function connectionPolyline(c: Connection, nodes: Map<string, RoomNode>, 
   const upperIsA = a.floor > b.floor;
   const U = upperIsA ? pa : pb;
   const L = upperIsA ? pb : pa;
+  const an = anchors?.[c.id];
+  if (an) {
+    // Drawn through the shaft or stair enclosure the plan carved for it.
+    const pts = dedupe([L, new THREE.Vector3(an.foot[0], L.y, an.foot[1]), new THREE.Vector3(an.head[0], U.y, an.head[1]), U]);
+    return upperIsA ? pts.reverse() : pts;
+  }
   if (c.kind === "lift" || c.kind === "ramp") {
     // Lift: walk to the shaft (under the upper node), then straight up.
     const foot = new THREE.Vector3(U.x, L.y, U.z);
@@ -121,12 +130,13 @@ export function routePolyline(
   blocked: Set<string>,
   exploded: boolean,
   plan?: BuildingPlan,
+  anchors?: Record<string, Anchor>,
 ): THREE.Vector3[] {
   const nodes = nodeMap(b);
   const out: THREE.Vector3[] = [];
   for (let i = 0; i < path.length - 1; i++) {
     const c = connectionBetween(b, path[i], path[i + 1], blocked);
-    let seg = c ? connectionPolyline(c, nodes, exploded) : [];
+    let seg = c ? connectionPolyline(c, nodes, exploded, anchors) : [];
     if (seg.length === 0) {
       const p = nodes.get(path[i]);
       const q = nodes.get(path[i + 1]);

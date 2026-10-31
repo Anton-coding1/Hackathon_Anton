@@ -75,11 +75,12 @@ function Floor({
         .map((s) => {
           const [x0, z0, x1, z1] = s.rect;
           const alert = s.nodeId && strandedNodeIds.has(s.nodeId);
+          const changed = s.changeNo !== undefined;
           return (
-            <mesh key={s.id} position={[(x0 + x1) / 2, 0.012, (z0 + z1) / 2]} rotation-x={-Math.PI / 2} receiveShadow>
+            <mesh key={s.id} position={[(x0 + x1) / 2, s.kind === "core" || (changed && s.kind === "stair") ? 0.03 : 0.012, (z0 + z1) / 2]} rotation-x={-Math.PI / 2} receiveShadow>
               <planeGeometry args={[x1 - x0 - 0.04, z1 - z0 - 0.04]} />
               <meshStandardMaterial
-                color={alert ? "#fde2e1" : FLOOR_FINISH[s.kind]}
+                color={alert ? "#fde2e1" : changed ? "#dbeafe" : FLOOR_FINISH[s.kind]}
                 roughness={0.85}
                 polygonOffset
                 polygonOffsetFactor={-1}
@@ -103,18 +104,21 @@ function Floor({
         ))}
       {showLabels &&
         floor.spaces
-          .filter((s) => s.kind !== "void" && s.kind !== "stair" && (labelMode === "all" || (s.nodeId && s.kind === "room")))
+          .filter((s) => s.kind !== "void" && (s.kind !== "stair" || s.changeNo !== undefined) && (labelMode === "all" || s.changeNo !== undefined || (s.nodeId && s.kind === "room")))
           .map((s) => {
             const [x0, z0, x1, z1] = s.rect;
             const big = !!s.nodeId;
             const alert = s.nodeId && strandedNodeIds.has(s.nodeId);
             return (
               <Html key={s.id} position={[(x0 + x1) / 2, 0.05, (z0 + z1) / 2 + (big ? 1.2 : 0)]} center zIndexRange={[5, 0]} pointerEvents="none">
-                <div className={`p-room ${big ? "is-node" : ""} ${alert ? "is-alert" : ""}`}>
-                  <b>{s.name}</b>
+                <div className={`p-room ${big ? "is-node" : ""} ${alert ? "is-alert" : ""} ${s.changeNo !== undefined ? "is-new" : ""}`}>
+                  <b>
+                    {s.changeNo !== undefined ? <i>{s.changeNo}</i> : null}
+                    {s.name}
+                  </b>
                   <span>
-                    {s.nodeId ? `${s.nodeId} · ` : ""}
-                    {Math.round(rectArea(s.rect))} m²
+                    {s.replaces ? `was ${s.replaces} · ` : ""}
+                    {Math.round(rectArea(s.rect) - (s.reducedBy ?? 0))} m²{s.reducedBy ? " (reduced)" : ""}
                   </span>
                 </div>
               </Html>

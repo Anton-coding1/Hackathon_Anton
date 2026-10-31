@@ -11,7 +11,7 @@ export type Source = "gemini" | "fallback" | "judge" | "scripted";
 export type Phase = "idle" | "alarm" | "sweeping" | "attacking" | "attacked" | "defending" | "proposed" | "auditing" | "approval" | "accepted" | "rejected";
 export type LogEntry = { id: number; at: number; role: "attacker" | "defender" | "judge" | "manual" | "system"; text: string; tone?: "bad" | "good" | "warn" | "ai" };
 export type PassportMeta = { createdAt: number; source: Source; attempts: number };
-export type GeminiStatus = { checked: boolean; configured: boolean; model: string; fastModel?: string };
+export type GeminiStatus = { checked: boolean; configured: boolean; model: string; fastModel?: string; status?: "ok" | "no-key" | "invalid-key" | "model-unavailable" | "unreachable"; detail?: string };
 export type RepairKind = "corridor" | "stairs" | "lift" | "ramp" | "unblock";
 export type Constraints = { budget: number; liftsRecalled: boolean; tolerance: 1 | 2; approveOver: number; allow: Record<RepairKind, boolean> };
 export type Fix = { scenario: Scenario; stranded: string[]; repair: Repair; source: Source; attempts: number; rejected: number };
@@ -27,7 +27,7 @@ const BASELINE: Scenario = { id: "BASELINE", name: "Normal operation", blockedCo
 const ZERO_RUNS: AgentRuns = { attacker: 0, defender: 0, judge: 0, geminiCalls: 0, fallbackCalls: 0, regressionChecks: 0 };
 
 export function defaultConstraints(preset: BuildingPreset): Constraints {
-  return { budget: preset.defaultBudget, liftsRecalled: false, tolerance: preset.defaultTolerance, approveOver: 50000, allow: { corridor: true, stairs: true, lift: true, ramp: true, unblock: true } };
+  return { budget: preset.defaultBudget, liftsRecalled: false, tolerance: preset.defaultTolerance, approveOver: Number.POSITIVE_INFINITY, allow: { corridor: true, stairs: true, lift: true, ramp: true, unblock: true } };
 }
 
 /** Non-evacuation lifts, which are recalled when lifts are assumed unusable in an emergency. */
@@ -102,9 +102,9 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
   const bump = (k: keyof AgentRuns, n = 1) => setRuns((r) => ({ ...r, [k]: r[k] + n }));
 
   useEffect(() => {
-    fetch("/api/agents")
+    fetch("/api/agents?check=1")
       .then((r) => r.json())
-      .then((j) => setGemini({ checked: true, configured: Boolean(j?.data?.configured), model: j?.data?.model ?? "", fastModel: j?.data?.fastModel }))
+      .then((j) => setGemini({ checked: true, configured: Boolean(j?.data?.configured), model: j?.data?.model ?? "", fastModel: j?.data?.fastModel, status: j?.data?.status, detail: j?.data?.detail }))
       .catch(() => setGemini({ checked: true, configured: false, model: "" }));
     say("system", `${preset.title} loaded. Every result shown is computed by the deterministic graph engine.`);
   }, [say, preset.title]);
@@ -257,7 +257,8 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
 
   /* ---------------- judge ---------------- */
   const judgeFor = useCallback(
-    async (s: Scenario, p: NonNullable<Proposal>): Promise<RepairAudit> => {
+    async (s: Scenario, p0: NonNullable<Proposal>): Promise<RepairAudit> => {
+      let p = p0;
       const { building: b, regressions: regs, budgetLeft: left, constraints: con } = S.current;
       setBusy(true);
       setPhase("auditing");
@@ -273,6 +274,19 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
         a = { ...a, accepted: false, after: a.before, reasons: ["Rejected: reopening a blocked door clears today's obstruction but adds no resilience; the building must survive this failure, so a structural change is needed."] };
       } else if (!con.allow[kind]) {
         a = { ...a, accepted: false, after: a.before, reasons: [`Rejected: design constraints do not allow ${kind === "unblock" ? "unblocking as a fix" : `new ${kind}s`}.`, ...a.reasons.filter((x) => !x.startsWith("Accepted"))] };
+      }
+      if (a.accepted && p.source === "gemini") {
+        // The agents always ship the lowest-cost verified fix: race Argon's answer against the exhaustive search.
+        const cheaper = fallbackRepair(b, s, regSet, left, S.current.rates, con.allow);
+        if (cheaper && cheaper.repair.cost < p.repair.cost) {
+          const a2 = auditRepair(b, s, cheaper.repair, regSet, left);
+          if (a2.accepted) {
+            say("judge", `Argon's fix works (£${p.repair.cost.toLocaleString("en-GB")}), but the search found a verified cheaper one: ${describeRepair(cheaper.repair)} for £${cheaper.repair.cost.toLocaleString("en-GB")}. Using the cheaper fix.`, "good");
+            p = { ...p, repair: cheaper.repair, estimate: cheaper.estimate, reasoning: `${cheaper.reasoning} (cheaper than Argon's £${p.repair.cost.toLocaleString("en-GB")} proposal)`, source: "fallback" };
+            setProposal(p);
+            a = a2;
+          }
+        }
       }
       if (a.accepted && p.repair.cost > con.approveOver) {
         // People stay in control of money: big changes need a human yes.
@@ -301,7 +315,13 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
       setVerdictFlash({ key: Date.now(), accepted: a.accepted, text: a.accepted ? "Change verified" : "Change rejected" });
       if (a.accepted) {
         say("judge", a.reasons[0], "good");
-        if (p.repair.kind !== "unblock_connection") {
+        if (p.repair.kind === "upgrade_lift") {
+          const ids = new Set(p.repair.connectionIds);
+          const nb = { ...b, connections: b.connections.map((c) => (ids.has(c.id) ? { ...c, evacuationLift: true } : c)) };
+          S.current.building = nb;
+          setBuilding(nb);
+          setRawScenario((x) => ({ ...x, blockedConnectionIds: x.blockedConnectionIds.filter((y) => !ids.has(y)) }));
+        } else if (p.repair.kind !== "unblock_connection") {
           const added = addedConnections(p.repair);
           const nb = withConnections(b, added);
           S.current.building = nb;
@@ -645,6 +665,7 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
 export type DemoController = ReturnType<typeof useDemoController>;
 
 export function describeRepair(r: Repair): string {
+  if (r.kind === "upgrade_lift") return r.label ?? `upgrade of the existing lift to an evacuation lift`;
   if (r.kind === "add_connections") {
     return r.label ?? `${r.connections.length} new connections (${r.connections.map((c) => c.id).join(", ")})`;
   }
@@ -653,5 +674,5 @@ export function describeRepair(r: Repair): string {
     const what = c.kind === "lift" ? (c.evacuationLift ? "evacuation lift" : "lift") : c.kind === "stairs" || !c.stepFree ? "staircase" : c.kind === "ramp" ? "ramp" : c.kind === "door" ? "additional step-free door" : "step-free corridor";
     return `new ${what} ${c.id} (${c.from} ↔ ${c.to}, ${c.length} m)`;
   }
-  return `reopening ${r.connectionId}`;
+  return `reopening ${(r as { connectionId: string }).connectionId}`;
 }

@@ -15,6 +15,7 @@ export type CostRates = {
     clearObstruction: number;
     liftSecondaryPower: number;
     liftExtraStop: number;
+    evacLobbyPerStop: number;
   };
   sources: { title: string; url: string }[];
   notes?: string;
@@ -34,6 +35,7 @@ export const RATE_BOUNDS: Record<RateKey, [number, number]> = {
   clearObstruction: [200, 15000],
   liftSecondaryPower: [5000, 120000],
   liftExtraStop: [3000, 60000],
+  evacLobbyPerStop: [2000, 60000],
 };
 
 /** Indicative placeholder rates used when no live pricing is available. Not a quotation. */
@@ -51,6 +53,7 @@ export const DEFAULT_RATES: CostRates = {
     clearObstruction: 2500,
     liftSecondaryPower: 25000,
     liftExtraStop: 12000,
+    evacLobbyPerStop: 9000,
   },
   sources: [],
   notes: "Built-in indicative rates for a hackathon demo. Not a quotation.",
@@ -66,6 +69,7 @@ export const RATE_LABELS: Record<RateKey, string> = {
   clearObstruction: "Clear / re-hang obstructed door",
   liftSecondaryPower: "Upgrade lift: secondary power + evac controls",
   liftExtraStop: "Each extra lift stop / landing door",
+  evacLobbyPerStop: "Protected lobby + evacuation controls (per lift stop)",
 };
 
 export type CostLine = { label: string; qty: number; unit: string; rate: number; total: number };
@@ -87,6 +91,11 @@ export function priceRepair(repair: Repair, building: Building, rates: CostRates
     else if (kind === "ramp") line(RATE_LABELS.rampPerMetre, round1(c.length), "m", r.rampPerMetre);
     else line(RATE_LABELS.corridorPerMetre, round1(c.length), "m", r.corridorPerMetre);
     line(RATE_LABELS.doorOpening, 2, "nr", r.doorOpening);
+  } else if (repair.kind === "upgrade_lift") {
+    const conns = building.connections.filter((c) => repair.connectionIds.includes(c.id));
+    const stops = new Set(conns.flatMap((c) => [c.from, c.to])).size || 2;
+    line(RATE_LABELS.liftSecondaryPower, 1, "item", r.liftSecondaryPower);
+    line(RATE_LABELS.evacLobbyPerStop, stops, "nr", r.evacLobbyPerStop);
   } else if (repair.kind === "add_connections") {
     const cs = repair.connections;
     if (cs.length && cs.every((c) => c.kind === "lift")) {

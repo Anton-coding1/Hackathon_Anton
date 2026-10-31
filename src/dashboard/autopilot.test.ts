@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
-import type { Building, Scenario } from "@/contracts/types";
+import type { Building, Repair, Scenario } from "@/contracts/types";
 import { PRESETS } from "@/data/buildings";
 import { certify, withConnection, withConnections } from "@/engine";
 import { DEFAULT_RATES } from "@/cost/costModel";
 import { fallbackAttack, fallbackRepair } from "./fallbackAgents";
+
+function applyFix(b: Building, r: Repair): Building {
+  if (r.kind === "add_connection") return withConnection(b, r.connection);
+  if (r.kind === "add_connections") return withConnections(b, r.connections);
+  if (r.kind === "upgrade_lift") return { ...b, connections: b.connections.map((c) => (r.connectionIds.includes(c.id) ? { ...c, evacuationLift: true } : c)) };
+  return b;
+}
 
 const ALL = { corridor: true, stairs: true, lift: true, ramp: true, unblock: false };
 
@@ -18,19 +25,19 @@ function harden(b0: Building, tolerance: number, budget: number) {
       regs.push(fa.scenario);
       const fx = fallbackRepair(b, fa.scenario, regs, budget - spent, DEFAULT_RATES, ALL);
       if (!fx || fx.repair.kind === "unblock_connection") return { b, spent, log, faultFree: false, stuckOn: "fire" };
-      b = fx.repair.kind === "add_connection" ? withConnection(b, fx.repair.connection) : withConnections(b, fx.repair.connections);
+      b = applyFix(b, fx.repair);
       spent += fx.repair.cost;
-      log.push(`FIRE ALARM -> ${fx.repair.kind === "add_connections" ? fx.repair.label : "single"} £${fx.repair.cost}`);
+      log.push(`FIRE ALARM -> ${"label" in fx.repair ? fx.repair.label : "single"} £${fx.repair.cost}`);
     }
-    const cert = certify(b, tolerance);
+    const cert = certify(b, tolerance, [], { skipEvacuationLifts: true });
     if (cert.faultFree) return { b, spent, log, faultFree: true, checked: cert.scenariosChecked };
     const s = cert.failures[0].scenario;
     regs.push(s);
     const fix = fallbackRepair(b, s, regs, budget - spent, DEFAULT_RATES, ALL);
     if (!fix || fix.repair.kind === "unblock_connection") return { b, spent, log, faultFree: false, stuckOn: s.name };
-    b = fix.repair.kind === "add_connection" ? withConnection(b, fix.repair.connection) : withConnections(b, fix.repair.connections);
+    b = applyFix(b, fix.repair);
     spent += fix.repair.cost;
-    log.push(`${s.name} -> ${fix.repair.kind === "add_connection" ? `${fix.repair.connection.kind} ${fix.repair.connection.from}-${fix.repair.connection.to}` : fix.repair.label} £${fix.repair.cost}`);
+    log.push(`${s.name} -> ${fix.repair.kind === "add_connection" ? `${fix.repair.connection.kind} ${fix.repair.connection.from}-${fix.repair.connection.to}` : "label" in fix.repair ? fix.repair.label : ""} £${fix.repair.cost}`);
   }
   return { b, spent, log, faultFree: false };
 }

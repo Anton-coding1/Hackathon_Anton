@@ -23,6 +23,7 @@ import {
   routeConnectionIds,
   routePolyline,
   type Activity,
+  type Anchor,
 } from "./sceneUtils";
 
 export type BuildingSceneProps = {
@@ -32,6 +33,8 @@ export type BuildingSceneProps = {
   onConnectionClick?: (id: string) => void;
   /** Optional extras, all safe to omit. */
   plan?: BuildingPlan;
+  /** Where verified changes physically sit (shafts / new stairs), from planChanges(). */
+  anchors?: Record<string, Anchor>;
   addedConnectionIds?: string[];
   selectedConnectionId?: string;
   proposal?: { connection: Connection; status: "pending" | "rejected" | "accepted" } | null;
@@ -76,6 +79,7 @@ function SceneContents({
   result,
   onConnectionClick,
   plan: planProp,
+  anchors,
   addedConnectionIds,
   selectedConnectionId,
   proposal,
@@ -114,7 +118,7 @@ function SceneContents({
         const key = [c.from, c.to].sort().join("|");
         const k = seen.get(key) ?? 0;
         seen.set(key, k + 1);
-        const pts = connectionPolyline(c, nodes, exploded);
+        const pts = connectionPolyline(c, nodes, exploded, anchors);
         if (k === 0 || pts.length < 2) return [c.id, pts];
         const a = pts[0];
         const b = pts[pts.length - 1];
@@ -124,7 +128,7 @@ function SceneContents({
         return [c.id, pts.map((p) => p.clone().add(n))];
       }),
     );
-  }, [building, nodes, exploded]);
+  }, [building, nodes, exploded, anchors]);
 
   const streams: FlowStream[] = useMemo(() => {
     return building.occupants.map((o) => {
@@ -136,14 +140,35 @@ function SceneContents({
         occupantId: o.id,
         label: o.label,
         stepFree: o.requiresStepFree,
-        points: path ? routePolyline(building, path, blocked, exploded, plan) : null,
+        points: path ? routePolyline(building, path, blocked, exploded, plan, anchors) : null,
         start,
         room,
       };
     });
-  }, [building, nodes, result, blocked, exploded, plan]);
+  }, [building, nodes, result, blocked, exploded, plan, anchors]);
 
-  const proposalPoints = useMemo(() => (proposal ? connectionPolyline(proposal.connection, nodes, exploded) : []), [proposal, nodes, exploded]);
+  // One label per lift shaft (the top stop), not one per floor.
+  const liftLabelHidden = useMemo(() => {
+    const hide = new Set<string>();
+    const best = new Map<string, { id: string; f: number }>();
+    for (const c of building.connections) {
+      if (c.kind !== "lift") continue;
+      const a = nodes.get(c.from);
+      const b = nodes.get(c.to);
+      if (!a || !b) continue;
+      const bottom = a.floor <= b.floor ? a.id : b.id;
+      const key = `${bottom}:${c.evacuationLift ? 1 : 0}:${added.has(c.id) ? 1 : 0}`;
+      const f = Math.max(a.floor, b.floor);
+      const cur = best.get(key);
+      if (!cur || f > cur.f) {
+        if (cur) hide.add(cur.id);
+        best.set(key, { id: c.id, f });
+      } else hide.add(c.id);
+    }
+    return hide;
+  }, [building, nodes, added]);
+
+  const proposalPoints = useMemo(() => (proposal ? connectionPolyline(proposal.connection, nodes, exploded, anchors) : []), [proposal, nodes, exploded, anchors]);
 
   return (
     <>
@@ -178,7 +203,7 @@ function SceneContents({
           points={polylines.get(c.id) ?? []}
           state={connectionState(c, blocked, routed, added, selectedConnectionId, hovered)}
           isNew={added.has(c.id)}
-          showLabel={mode === "all" || (mode === "minimal" && (blocked.has(c.id) || added.has(c.id) || hovered === c.id))}
+          showLabel={mode === "all" || (mode === "minimal" && (hovered === c.id || ((blocked.has(c.id) || added.has(c.id)) && !liftLabelHidden.has(c.id))))}
           heat={heat?.[c.id]}
           onClick={onConnectionClick}
           onHover={setHovered}

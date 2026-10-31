@@ -46,12 +46,21 @@ export function auditRepair(
   }
 
   // 2. Apply to copies only.
+  const upgraded = new Set(repair.kind === "upgrade_lift" ? repair.connectionIds : []);
   const repairedBuilding =
-    repair.kind === "add_connection" ? withConnection(building, repair.connection) : repair.kind === "add_connections" ? withConnections(building, repair.connections) : building;
+    repair.kind === "add_connection"
+      ? withConnection(building, repair.connection)
+      : repair.kind === "add_connections"
+        ? withConnections(building, repair.connections)
+        : repair.kind === "upgrade_lift"
+          ? { ...cloneBuilding(building), connections: building.connections.map((c) => (upgraded.has(c.id) ? { ...c, evacuationLift: true } : { ...c })) }
+          : building;
   const repairedScenario: Scenario =
     repair.kind === "unblock_connection"
       ? { ...scenario, blockedConnectionIds: scenario.blockedConnectionIds.filter((id) => id !== repair.connectionId) }
-      : scenario;
+      : repair.kind === "upgrade_lift"
+        ? { ...scenario, blockedConnectionIds: scenario.blockedConnectionIds.filter((id) => !upgraded.has(id)) }
+        : scenario;
 
   const after = simulate(repairedBuilding, repairedScenario);
 
@@ -63,7 +72,9 @@ export function auditRepair(
       ? `proposed connection ${repair.connection.id}`
       : repair.kind === "add_connections"
         ? `proposed ${repair.label ?? `change (${repair.connections.map((c) => c.id).join(", ")})`}`
-        : `unblocking ${repair.connectionId}`;
+        : repair.kind === "upgrade_lift"
+          ? `proposed ${repair.label ?? "lift upgrade"}`
+          : `unblocking ${repair.connectionId}`;
   if (stillStranded.length > 0) {
     reasons.push(`Rejected: the ${what} does not restore an eligible route for ${stillStranded.join(", ")}.`);
   }
@@ -85,7 +96,8 @@ export function auditRepair(
     }
     const regBefore = simulate(building, reg);
     // An unblock repair applies only to the target scenario; an added connection applies everywhere.
-    const regAfter = simulate(repairedBuilding, reg);
+    // An upgraded (evacuation) lift is no longer recalled, so it is reopened in every regression too.
+    const regAfter = simulate(repairedBuilding, upgraded.size ? { ...reg, blockedConnectionIds: reg.blockedConnectionIds.filter((id) => !upgraded.has(id)) } : reg);
     const worse = regAfter.unreachableOccupantIds.filter((id) => !regBefore.unreachableOccupantIds.includes(id));
     const passed = worse.length === 0;
     regressions.push({
@@ -120,6 +132,16 @@ export function validateRepair(building: Building, scenario: Scenario, repair: R
   const problems: string[] = [];
   if (typeof repair.cost !== "number" || !Number.isFinite(repair.cost) || repair.cost < 0) {
     problems.push("the cost must be a finite, non-negative number.");
+  }
+  if (repair.kind === "upgrade_lift") {
+    if (!Array.isArray(repair.connectionIds) || repair.connectionIds.length === 0 || repair.connectionIds.length > 40) return [...problems, "upgrade_lift needs between 1 and 40 lift connection IDs."];
+    for (const id of repair.connectionIds) {
+      const c = building.connections.find((x) => x.id === id);
+      if (!c) problems.push(`lift connection ${id} does not exist.`);
+      else if (c.kind !== "lift") problems.push(`${id} is not a lift.`);
+      else if (c.evacuationLift) problems.push(`${id} is already an evacuation lift.`);
+    }
+    return problems;
   }
   if (repair.kind === "add_connections") {
     if (!Array.isArray(repair.connections) || repair.connections.length === 0 || repair.connections.length > 40) {
@@ -193,5 +215,11 @@ export function addedConnections(r: Repair): Building["connections"] {
 
 /** A short stable reference for a repair (connection id, bundle label or reopened id). */
 export function repairRef(r: Repair): string {
-  return r.kind === "add_connection" ? r.connection.id : r.kind === "add_connections" ? r.connections[0]?.id ?? "BUNDLE" : r.connectionId;
+  return r.kind === "add_connection"
+    ? r.connection.id
+    : r.kind === "add_connections"
+      ? r.connections[0]?.id ?? "BUNDLE"
+      : r.kind === "upgrade_lift"
+        ? r.connectionIds[0] ?? "LIFT"
+        : r.connectionId;
 }

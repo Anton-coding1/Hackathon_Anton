@@ -125,9 +125,9 @@ export function ConnectionVisual({ connection, points, state, isNew, showLabel, 
             onPointerLeave={() => onHover?.(null)}
             title={`${connection.id}: ${connection.from} ↔ ${connection.to}, ${connection.length} m, ${connection.stepFree ? "step-free" : "stairs"}. Click to ${state === "blocked" ? "reopen" : "block"}.`}
           >
-            <b>{connection.id}</b>
+            <b>{connection.kind === "lift" ? (connection.evacuationLift ? "Evac lift" : "Lift") : connection.id}</b>
             {connection.kind === "lift" ? (
-              <span>{state === "blocked" ? "lift recalled" : connection.evacuationLift ? "evac lift" : "lift"}</span>
+              <span>{state === "blocked" ? "recalled" : isNew ? "new" : connection.evacuationLift ? "works in a fire" : ""}</span>
             ) : state === "blocked" ? (
               <span>blocked</span>
             ) : !connection.stepFree ? (

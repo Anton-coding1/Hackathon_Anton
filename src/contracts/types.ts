@@ -64,6 +64,13 @@ export type Repair =
       connections: Connection[];
       cost: number;
       label?: string;
+    }
+  /** Optional, additive (v1.1): bring existing lift connections up to evacuation-lift standard (secondary power, protected lobbies). */
+  | {
+      kind: "upgrade_lift";
+      connectionIds: string[];
+      cost: number;
+      label?: string;
     };
 
 export type TestResult = {

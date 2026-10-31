@@ -6,7 +6,7 @@
 
 export type Rect = [x0: number, z0: number, x1: number, z1: number];
 
-export type SpaceKind = "room" | "circulation" | "stair" | "lobby" | "ancillary" | "void";
+export type SpaceKind = "room" | "circulation" | "stair" | "lobby" | "ancillary" | "void" | "core";
 
 export type Space = {
   id: string;
@@ -15,6 +15,12 @@ export type Space = {
   kind: SpaceKind;
   /** Graph node that sits in this space, if any. */
   nodeId?: string;
+  /** Set by verified changes: number of the change in the schedule. */
+  changeNo?: number;
+  /** For a converted space: what it used to be. */
+  replaces?: string;
+  /** m² taken out of this space by a new shaft or stair formed inside it. */
+  reducedBy?: number;
 };
 
 /** An opening in a wall. axis "x" = wall runs along x (constant z); "z" = wall runs along z (constant x). */
@@ -26,6 +32,8 @@ export type Opening = {
   kind: "door" | "open" | "exit";
   /** Only cut when this connection exists in the building (e.g. a repair). */
   connectionId?: string;
+  /** Set by verified changes: number of the change in the schedule. */
+  changeNo?: number;
 };
 
 export type FloorPlan = {

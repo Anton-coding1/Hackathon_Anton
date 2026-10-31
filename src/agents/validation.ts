@@ -80,6 +80,13 @@ export function validateRepairShape(raw: unknown, building: Building, scenario: 
       },
     };
   }
+  if (kind === "upgrade_lift") {
+    const ids = raw.connectionIds;
+    if (!Array.isArray(ids) || ids.length === 0 || !ids.every((x) => typeof x === "string")) return { ok: false, error: "upgrade_lift needs connectionIds: every connection of one lift." };
+    const bad = (ids as string[]).filter((id) => building.connections.find((c) => c.id === id)?.kind !== "lift");
+    if (bad.length) return { ok: false, error: `Not existing lift connections: ${bad.join(", ")}.` };
+    return { ok: true, value: { kind: "upgrade_lift", connectionIds: [...new Set(ids as string[])], cost } };
+  }
   if (kind === "unblock_connection") {
     const id = raw.connectionId;
     if (typeof id !== "string" || !building.connections.some((c) => c.id === id)) {
@@ -88,7 +95,7 @@ export function validateRepairShape(raw: unknown, building: Building, scenario: 
     if (!scenario.blockedConnectionIds.includes(id)) return { ok: false, error: `${id} is not blocked in this scenario.` };
     return { ok: true, value: { kind: "unblock_connection", connectionId: id, cost } };
   }
-  return { ok: false, error: 'kind must be "add_connection" or "unblock_connection".' };
+  return { ok: false, error: 'kind must be "add_connection", "upgrade_lift" or "unblock_connection".' };
 }
 
 /* ---------- request-body validation for the API route (do not trust the browser) ---------- */

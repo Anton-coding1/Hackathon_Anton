@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { GoogleGenAI } from "@google/genai";
 import { AgentError, geminiConfig, suggestAttack, suggestRepair } from "@/agents";
 import { checkBuilding, checkResult, checkScenario } from "@/agents/validation";
 import { simulate } from "@/engine";
@@ -13,9 +14,31 @@ type Err = { success: false; error: string; code?: string };
 
 const fail = (error: string, status = 400, code?: string) => NextResponse.json<Err>({ success: false, error, code }, { status });
 
-export async function GET() {
-  const { configured, model, fastModel } = geminiConfig();
-  return NextResponse.json({ success: true, data: { configured, model, fastModel } });
+type Health = "ok" | "no-key" | "invalid-key" | "model-unavailable" | "unreachable";
+let health: { at: number; key: string; model: string; status: Health; detail?: string } | null = null;
+
+/** Real check that the key works and the lead model is enabled for it (cached for 5 minutes). */
+async function checkGemini(key: string, model: string): Promise<{ status: Health; detail?: string }> {
+  if (health && health.key === key && health.model === model && Date.now() - health.at < 5 * 60_000) return health;
+  let status: Health = "ok";
+  let detail: string | undefined;
+  try {
+    const ai = new GoogleGenAI({ apiKey: key });
+    await Promise.race([ai.models.get({ model }), new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 8000))]);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    detail = msg.slice(0, 160);
+    status = /timeout|fetch failed|ENOTFOUND|ECONN/i.test(msg) ? "unreachable" : /404|not found/i.test(msg) ? "model-unavailable" : /API key|401|403|PERMISSION|invalid/i.test(msg) ? "invalid-key" : "unreachable";
+  }
+  health = { at: Date.now(), key, model, status, detail };
+  return { status, detail };
+}
+
+export async function GET(req: Request) {
+  const { configured, model, fastModel, key } = geminiConfig();
+  const wantCheck = new URL(req.url).searchParams.get("check") === "1";
+  const h = !configured || !key ? { status: "no-key" as Health } : wantCheck ? await checkGemini(key, model) : { status: "ok" as Health };
+  return NextResponse.json({ success: true, data: { configured: configured && h.status === "ok", model, fastModel, status: h.status, detail: h.detail } });
 }
 
 /**

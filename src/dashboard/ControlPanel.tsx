@@ -118,12 +118,6 @@ export function ControlPanel({
             onChange={(e) => setConstraints({ ...constraints, budget: Number(e.target.value) })}
           />
         </label>
-        <label className="field" style={{ marginTop: 10 }}>
-          <span>
-            Ask me before any change over <b>£{constraints.approveOver.toLocaleString("en-GB")}</b>
-          </span>
-          <input type="range" min={0} max={200000} step={5000} value={constraints.approveOver} disabled={c.busy} onChange={(e) => setConstraints({ ...constraints, approveOver: Number(e.target.value) })} />
-        </label>
         <details className="adv">
           <summary>Advanced</summary>
         <div className="field" style={{ marginTop: 10 }}>

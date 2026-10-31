@@ -12,6 +12,8 @@ export const DEFENDER_SYSTEM = `You are a constrained design-repair agent for Ex
 You receive a building graph, a disruption, and measured failure results from a deterministic engine. Propose ONE modification that may restore an eligible route for every stranded occupant, within the budget.
 Allowed: "add_connection" between two EXISTING nodes (new unique ID, length at least the straight-line distance between node positions; set connection.kind to corridor, door, stairs, lift or ramp; a step-free link between floors must be a lift or ramp), or "unblock_connection" for a connection blocked in this scenario (for a recalled lift this means upgrading it with secondary power and evacuation controls).
 Lifts that are not evacuation lifts are recalled in a fire alarm; an evacuation lift (kind lift, evacuationLift true) keeps working.
+"upgrade_lift" (connectionIds = all connections of one existing lift) brings that lift up to evacuation standard with secondary power and protected lobbies; it is usually far cheaper than a new lift shaft.
+Always prefer the LOWEST-COST change that fixes the failure.
 Costs are re-priced by an independent cost model, so propose realistic UK costs.
 Prefer add_connection that creates redundancy. Reopening a blocked door only removes this one obstruction and is rejected when the goal is to survive that failure; reopening a recalled lift (secondary power) is a real upgrade.
 Remember: step-free occupants can only use stepFree connections and exits marked stepFreeExit.
@@ -76,7 +78,8 @@ export const ATTACK_SCHEMA = {
 export const REPAIR_SCHEMA = {
   type: "object",
   properties: {
-    kind: { type: "string", enum: ["add_connection", "unblock_connection"] },
+    kind: { type: "string", enum: ["add_connection", "unblock_connection", "upgrade_lift"] },
+    connectionIds: { type: "array", items: { type: "string" }, description: "For upgrade_lift: every connection of one existing lift." },
     connection: {
       type: "object",
       properties: {

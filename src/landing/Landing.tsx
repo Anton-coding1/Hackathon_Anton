@@ -36,12 +36,23 @@ export function Landing() {
   }, [b, lifts, alarmResult]);
 
   const [step, setStep] = useState(0); // 0 normal · 1 alarm · 2..n sweep · last verdict
+  const [playing, setPlaying] = useState(false);
   const last = sample.items.length + 2;
+  // Waits for a click, then plays once: alarm → sweep → verdict.
   useEffect(() => {
-    const ms = step === 0 ? 3200 : step === 1 ? 2800 : step === last ? 5200 : 520;
-    const t = setTimeout(() => setStep((x) => (x >= last ? 0 : x + 1)), ms);
+    if (!playing) return;
+    if (step >= last) {
+      setPlaying(false);
+      return;
+    }
+    const ms = step === 0 ? 300 : step === 1 ? 2600 : 480;
+    const t = setTimeout(() => setStep((x) => x + 1), ms);
     return () => clearTimeout(t);
-  }, [step, last]);
+  }, [step, last, playing]);
+  const start = () => {
+    setStep(0);
+    setPlaying(true);
+  };
 
   const phase = step === 0 ? "normal" : step === 1 ? "alarm" : step === last ? "verdict" : "sweep";
   const current = phase === "sweep" ? sample.items[step - 2] : null;
@@ -50,6 +61,14 @@ export function Landing() {
   const ticker = phase === "sweep" || phase === "verdict" ? sample.items.slice(Math.max(0, Math.min(step - 2, sample.items.length) - 5), Math.min(step - 1, sample.items.length)) : [];
   const atRisk = result.unreachableOccupantIds.length > 0;
   const nameOf = (id: string) => b.occupants.find((o) => o.id === id)?.label.toLowerCase() ?? id;
+  /** "two wheelchair users", "a resident and a wheelchair user" */
+  const people = (ids: string[]) => {
+    const counts = new Map<string, number>();
+    for (const id of ids) counts.set(nameOf(id), (counts.get(nameOf(id)) ?? 0) + 1);
+    const words = ["", "a", "two", "three", "four", "five"];
+    const parts = [...counts].map(([label, n]) => (n === 1 ? `the ${label}` : `${words[n] ?? n} ${label}s`));
+    return parts.length <= 1 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  };
 
   return (
     <div className="landing">
@@ -79,7 +98,7 @@ export function Landing() {
             Gemini 4 Argon attacks your floor plan, designs costed fixes and argues with an independent judge until no single failure can trap anyone, down to the lift that gets recalled when the fire alarm sounds.
           </p>
           <div className="l-ctas">
-            <a className="l-btn l-btn-primary" href={`/lab?b=${bid}&autoplay=1`}>
+            <a className="l-btn l-btn-primary" href={`/lab?b=${bid}`}>
               Run the live demo
             </a>
             <a className="l-btn" href="#upload">
@@ -112,6 +131,11 @@ export function Landing() {
               </span>
             </div>
             {phase !== "normal" && <div className="l-fire">FIRE ALARM · LIFTS RECALLED</div>}
+            {phase === "normal" && !playing && (
+              <button className="l-scene-cta" onClick={start}>
+                🔔 Activate fire alarm
+              </button>
+            )}
             <div className="l-scene-tag">Live engine · every route solved in your browser</div>
           </div>
           <aside className="l-demo-side">
@@ -121,18 +145,18 @@ export function Landing() {
             </div>
             <p className="l-explain">
               {phase === "normal"
-                ? `${preset.title}: ${b.occupants.length} people tracked across ${new Set(b.nodes.map((n) => n.floor)).size} floors. Every route is open.`
+                ? `${preset.title}: ${new Set(b.nodes.map((n) => n.floor)).size} floors, one lift, two stairs. On a normal day everyone can get out. Press the button to sound the fire alarm.`
                 : phase === "alarm"
-                  ? `Lifts are recalled. ${alarmResult.unreachableOccupantIds.length ? `The ${alarmResult.unreachableOccupantIds.map(nameOf).join(" and the ")} can't use stairs, so they're trapped before fire blocks anything.` : "Everyone can still use the stairs."}`
+                  ? `Lifts are recalled. ${alarmResult.unreachableOccupantIds.length ? `${people(alarmResult.unreachableOccupantIds).replace(/^./, (x) => x.toUpperCase())} can't use stairs, so they're trapped before fire blocks anything.` : "Everyone can still use the stairs."}`
                   : phase === "sweep"
                     ? "Now fire blocks one path at a time. Is there another way out?"
-                    : `${sample.badTotal} of the ${sample.total} blocked-path scenarios trap someone else as well. Nobody had to guess which ones.`}
+                    : `${sample.badTotal} of the ${sample.total} blocked-path scenarios trap someone else as well. Nobody had to guess which ones: the agents tested them all.`}
             </p>
             <ul className="l-ticker">
               {ticker.map((t, k) => (
                 <li key={`${t.scenario.id}-${k}`} className={t.extra.length ? "bad" : "ok"}>
                   <span>Fire blocks {describeBlocked(b, t.scenario.blockedConnectionIds.filter((id) => !lifts.includes(id)))}</span>
-                  <b>{t.extra.length ? `✕ ${t.extra.map(nameOf).join(", ")} trapped` : "✓ another way out"}</b>
+                  <b>{t.extra.length ? `✕ ${people(t.extra)} trapped` : "✓ another way out"}</b>
                 </li>
               ))}
             </ul>
@@ -141,9 +165,20 @@ export function Landing() {
                 <i style={{ width: `${(100 * (step - 1)) / sample.items.length}%` }} />
               </div>
             )}
-            <a className="l-btn l-btn-primary l-block" href={`/lab?b=${bid}&autoplay=1`}>
-              Watch the agents fix it →
-            </a>
+            {phase === "normal" && !playing ? (
+              <button className="l-fire-btn" onClick={start}>
+                🔔 Activate fire alarm
+              </button>
+            ) : phase === "verdict" ? (
+              <div className="l-after">
+                <a className="l-btn l-btn-primary l-block" href={`/lab?b=${bid}`}>
+                  Watch the agents fix it →
+                </a>
+                <button className="l-link" onClick={start}>
+                  Replay
+                </button>
+              </div>
+            ) : null}
             <p className="l-muted small">Fictional building · nobody chooses the blocked paths, the agents test them all</p>
           </aside>
         </div>
@@ -218,7 +253,7 @@ export function Landing() {
       <section className="l-final">
         <h2>From floor plan to fault-free in under three minutes.</h2>
         <div className="l-ctas">
-          <a className="l-btn l-btn-primary" href={`/lab?b=${bid}&autoplay=1`}>
+          <a className="l-btn l-btn-primary" href={`/lab?b=${bid}`}>
             Run the live demo
           </a>
           <a className="l-btn" href="#upload">

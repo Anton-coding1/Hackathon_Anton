@@ -12,6 +12,7 @@ export type RepairKind = "corridor" | "stairs" | "lift" | "ramp" | "unblock";
 
 export function repairKind(r: Repair): RepairKind {
   if (r.kind === "unblock_connection") return "unblock";
+  if (r.kind === "upgrade_lift") return "lift";
   const c = r.kind === "add_connection" ? r.connection : r.connections[0];
   const k = c?.kind;
   if (k === "lift" || k === "ramp" || k === "stairs") return k;
@@ -104,6 +105,22 @@ export function fallbackRepair(
       }));
       candidates.push({ kind: "add_connections", connections, cost: 0, label: `New evacuation lift beside ${bottom.label} (${upper.length + 1} stops)` });
     }
+    // Usually cheaper: upgrade an existing passenger lift to evacuation standard (secondary power, protected lobbies).
+    const byBottom = new Map<string, string[]>();
+    for (const c of building.connections) {
+      if (c.kind !== "lift" || c.evacuationLift) continue;
+      const a = building.nodes.find((x) => x.id === c.from);
+      const b = building.nodes.find((x) => x.id === c.to);
+      if (!a || !b) continue;
+      const bottom = a.floor <= b.floor ? a : b;
+      byBottom.set(bottom.id, [...(byBottom.get(bottom.id) ?? []), c.id]);
+    }
+    for (const [bottomId, ids] of byBottom) {
+      if (!ids.some((id) => scenario.blockedConnectionIds.includes(id))) continue;
+      const label = building.nodes.find((x) => x.id === bottomId)?.label ?? bottomId;
+      const stops = new Set(building.connections.filter((c) => ids.includes(c.id)).flatMap((c) => [c.from, c.to])).size;
+      candidates.push({ kind: "upgrade_lift", connectionIds: ids, cost: 0, label: `Upgrade the existing lift at ${label} to an evacuation lift (${stops} stops)` });
+    }
   }
   const linked = new Set(building.connections.map((c) => [c.from, c.to].sort().join("|")));
   let n = 1;
@@ -138,20 +155,17 @@ export function fallbackRepair(
   }
   // Reopening only counts as a structural fix for lifts (secondary power makes it an evacuation lift);
   // reopening a door just removes today's obstruction and adds no resilience.
-  if (allow.unblock)
-    for (const id of scenario.blockedConnectionIds)
-      if (building.connections.find((c) => c.id === id && c.kind === "lift" && !c.evacuationLift)) candidates.push({ kind: "unblock_connection", connectionId: id, cost: 0 });
 
   const priced = candidates.map((r) => withModelledCost(r, building, rates)).sort((x, y) => x.repair.cost - y.repair.cost);
   for (const { repair, estimate } of priced) {
     if (repair.cost > budget) break;
     if (auditRepair(building, scenario, repair, regressions, budget).accepted) {
       const why =
-        repair.kind === "add_connections"
+        repair.kind === "add_connections" || repair.kind === "upgrade_lift"
           ? `Cheapest fix that passes the judge: ${repair.label ?? "a multi-floor change"}.`
           : repair.kind === "add_connection"
           ? `Cheapest fix that passes the judge: ${repair.connection.kind === "lift" ? "an evacuation lift" : repair.connection.kind === "stairs" ? "a new staircase" : repair.connection.kind === "door" ? "a second, separate door" : "a step-free corridor"} ${repair.connection.from} ↔ ${repair.connection.to}.`
-          : `Cheapest fix that passes the judge: reopen ${repair.connectionId}${building.connections.find((c) => c.id === repair.connectionId)?.kind === "lift" ? " by giving the lift secondary power and evacuation controls" : ""}.`;
+          : `Cheapest fix that passes the judge: reopen ${(repair as { connectionId: string }).connectionId}.`;
       return { repair, reasoning: why, estimate };
     }
   }
