@@ -69,6 +69,9 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
   const [sweep, setSweep] = useState<{ index: number; total: number; label: string; ok: boolean; trapped: number; title: string } | null>(null);
   const [approval, setApproval] = useState<{ proposal: NonNullable<Proposal>; scenarioName: string; resolve: (ok: boolean) => void } | null>(null);
   const logId = useRef(0);
+  // Demo time box: Gemini is used for the headline attack and fix in the first ~14 s; the rest is instant search.
+  const demoStart = useRef(0);
+  const geminiWindow = () => demoStart.current === 0 || Date.now() - demoStart.current < 14000;
   const runToken = useRef(0);
 
   /** Applies the emergency-lift assumption on top of any scenario. */
@@ -130,7 +133,9 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
   }, [loadRates]);
 
   const callAgents = async (body: Record<string, unknown>) => {
-    const res = await fetch("/api/agents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const ctl = new AbortController();
+    const t = setTimeout(() => ctl.abort(), 11000);
+    const res = await fetch("/api/agents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal: ctl.signal }).finally(() => clearTimeout(t));
     const json = await res.json().catch(() => ({ success: false, error: "Bad response from /api/agents" }));
     if (!json.success) throw new Error(json.error ?? `Agent request failed (${res.status})`);
     return json.data;
@@ -178,16 +183,16 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
       let reasoning = "";
       let source: Source = "gemini";
       try {
-        if (!g.configured) throw new Error("not configured");
+        if (!g.configured || !geminiWindow()) throw new Error(g.configured ? "time box" : "not configured");
         bump("geminiCalls");
         const data = await callAgents({ action: "attack", building: b, prior: t.map((x) => ({ scenario: x })), maxBlocked: con.tolerance, tier: "lead" });
         raw = data.scenario;
         reasoning = data.reasoning || "";
-        await wait(300);
+        await wait(80);
       } catch (e) {
         if (g.configured) say("system", `Gemini attack failed (${e instanceof Error ? e.message : e}). Using deterministic search.`, "warn");
         bump("fallbackCalls");
-        await wait(800);
+        await wait(150);
         const fb = fallbackAttack(b, t, con.tolerance);
         if (!fb) {
           say("attacker", "No untested disruptions left.", "warn");
@@ -218,7 +223,7 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
       setPhase("defending");
       setAudit(null);
       bump("defender");
-      const useGemini = g.configured && fb.length < 2; // after two rejections, a deterministic backstop keeps the run moving
+      const useGemini = g.configured && fb.length < 1 && tier === "lead" && geminiWindow(); // after two rejections, a deterministic backstop keeps the run moving
       const modelName = tier === "fast" ? g.fastModel ?? "Flash" : g.model;
       say("defender", `${useGemini ? `${modelName} is designing` : "Designing"} repair attempt ${fb.length + 1} (budget £${left.toLocaleString("en-GB")})…`, "ai");
       try {
@@ -230,12 +235,12 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
           const data = await callAgents({ action: "defend", building: b, scenario: s, result: r, budget: left, feedback: fb, constraints: { allowed, rates: rt.rates }, tier });
           const priced = withModelledCost(data.repair, b, rt);
           p = { repair: priced.repair, estimate: priced.estimate, aiCost: data.repair.cost, reasoning: data.reasoning || "", source: "gemini", attempt: fb.length + 1, model: data.model };
-          await wait(300);
+          await wait(80);
         } catch (e) {
           const why = e instanceof Error ? e.message : String(e);
           if (g.configured) say("system", why === "backstop" ? "Two Gemini proposals were rejected; the deterministic defender takes this attempt." : `Gemini repair failed (${why}). Using deterministic repair search.`, "warn");
           bump("fallbackCalls");
-          await wait(800);
+          await wait(150);
           const f = fallbackRepair(b, s, [...regs, s], left, rt, con.allow);
           if (!f) {
             say("defender", "No repair within budget and design constraints passes the judge.", "warn");
@@ -266,7 +271,7 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
       const regSet = regs.some((x) => x.id === s.id) ? regs : [...regs, s];
       bump("regressionChecks", regSet.length);
       say("judge", `Re-solving the target scenario and ${regSet.length} stored regression(s)…`, "ai");
-      await wait(800);
+      await wait(250);
       let a = auditRepair(b, s, p.repair, regSet, left);
       const kind = repairKind(p.repair);
       const reopenDoor = p.repair.kind === "unblock_connection" && b.connections.find((c) => c.id === (p.repair as { connectionId: string }).connectionId)?.kind !== "lift";
@@ -413,7 +418,7 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
     if (forced) {
       bump("attacker");
       setPhase("attacking");
-      await wait(500);
+      await wait(120);
       found = applyScenario(forced.scenario, "fallback", forced.reason);
       setPhase("attacked");
     } else {
@@ -423,12 +428,12 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
     if (!found || found.result.unreachableOccupantIds.length === 0) return "hardened";
     let fb: Feedback[] = [];
     for (let i = 0; i < 3; i++) {
-      await wait(300);
+      await wait(80);
       if (token !== runToken.current) return "cancelled";
       const p = await defendFor(found.scenario, fb, forced ? "fast" : "lead");
       if (token !== runToken.current) return "cancelled";
       if (!p) return "stuck";
-      await wait(400);
+      await wait(100);
       const a = await judgeFor(found.scenario, p);
       if (a.accepted) return "repaired";
       fb = [...fb, { repair: p.repair, reasons: a.reasons }];
@@ -503,11 +508,11 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
       let remaining: Scenario | undefined;
       let finalPass = false;
       for (let round = 1; round <= 24; round++) {
-        await wait(700);
+        await wait(150);
         if (!autopilotRef.current) break;
         const cert = certify(S.current.building, con.tolerance, lifts(), OPTS);
         let r: "hardened" | "repaired" | "stuck" | "cancelled";
-        if (round === 1 || (cert.faultFree && !finalPass)) {
+        if (round === 1) {
           // Lead brain: Argon (or the built-in attacker) invents the blockage itself.
           if (cert.faultFree) {
             finalPass = true;
@@ -544,7 +549,7 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
           break;
         }
       }
-      if (autopilotRef.current && sweepRef.current) await sweepRef.current("Final check: re-testing every blocked path", 3500);
+      if (autopilotRef.current && sweepRef.current) await sweepRef.current("Final check: re-testing every blocked path", 1800);
       const certificate = certify(S.current.building, con.tolerance, lifts(), OPTS);
       if (certificate.faultFree) status = "fault-free";
       setReport({ status, certificate, fixes: S.current.fixes, totalCost: S.current.spent, remaining: certificate.faultFree ? undefined : remaining ?? certificate.failures[0]?.scenario, at: Date.now() });
@@ -556,7 +561,7 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
 
   /** Walks the 3D view through every blocked-path scenario the engine tests. */
   const runSweep = useCallback(
-    async (title: string, durationMs = 5500): Promise<Certificate> => {
+    async (title: string, durationMs = 3000): Promise<Certificate> => {
       const con = S.current.constraints;
       const b = S.current.building;
       const lifts = con.liftsRecalled || alarmRef.current ? recalledLifts(b) : [];
@@ -578,7 +583,7 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
       }
       setPreview(null);
       say("judge", trapped ? `${trapped} of ${items.length} scenarios would trap someone.` : `Everyone can get out in all ${items.length} scenarios.`, trapped ? "bad" : "good");
-      await wait(900);
+      await wait(400);
       setSweep(null);
       return cert;
     },
@@ -592,11 +597,12 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
     if (autopilotBusy.current) return;
     setAlarm(true);
     alarmRef.current = true;
+    demoStart.current = Date.now();
     setReport(null);
     setPhase("alarm");
     say("system", "FIRE ALARM ACTIVATED. Lifts are recalled. The agents will now test what happens if fire blocks each path in turn.", "bad");
     autopilotRef.current = true;
-    await wait(1300);
+    await wait(600);
     await runSweep("Testing every blocked path");
     if (!alarmRef.current) return;
     setAutopilot(true);

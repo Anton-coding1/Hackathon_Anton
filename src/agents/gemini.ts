@@ -40,7 +40,7 @@ export async function generateJson(system: string, prompt: string, schema: unkno
   const model = tier === "fast" ? cfg.fastModel : cfg.model;
   if (!key) throw new AgentError("GEMINI_API_KEY is not set on the server.", "NO_API_KEY");
   client ??= new GoogleGenAI({ apiKey: key });
-  const TIMEOUT_MS = tier === "fast" ? 25_000 : 55_000;
+  const TIMEOUT_MS = tier === "fast" ? 8_000 : 10_000;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -52,7 +52,7 @@ export async function generateJson(system: string, prompt: string, schema: unkno
         systemInstruction: system,
         responseMimeType: "application/json",
         responseJsonSchema: schema,
-        thinkingConfig: { thinkingLevel: tier === "fast" ? ThinkingLevel.LOW : ThinkingLevel.MEDIUM },
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
         abortSignal: controller.signal,
       },
     });
