@@ -6,6 +6,7 @@ import type { BuildingPreset } from "@/data/buildings";
 import { addedConnections, auditRepair, certify, describeBlocked, occupantWeights, simulate, withConnection, withConnections, type Certificate } from "@/engine";
 import { DEFAULT_RATES, withModelledCost, type CostEstimate, type CostRates } from "@/cost/costModel";
 import { fallbackAttack, fallbackRepair, repairKind } from "./fallbackAgents";
+import { bestNextFix, costToMakeSafe, type PlannedFix } from "./budgetPlanner";
 
 export type Source = "gemini" | "fallback" | "judge" | "scripted";
 export type Phase = "idle" | "alarm" | "sweeping" | "attacking" | "attacked" | "defending" | "proposed" | "auditing" | "approval" | "accepted" | "rejected";
@@ -15,7 +16,17 @@ export type GeminiStatus = { checked: boolean; configured: boolean; model: strin
 export type RepairKind = "corridor" | "stairs" | "lift" | "ramp" | "unblock";
 export type Constraints = { budget: number; liftsRecalled: boolean; tolerance: 1 | 2; approveOver: number; allow: Record<RepairKind, boolean> };
 export type Fix = { scenario: Scenario; stranded: string[]; repair: Repair; source: Source; attempts: number; rejected: number };
-export type Report = { status: "fault-free" | "stuck" | "stopped"; certificate: Certificate; fixes: Fix[]; totalCost: number; remaining?: Scenario; at: number };
+export type Report = {
+  status: "fault-free" | "stuck" | "stopped" | "over-budget";
+  certificate: Certificate;
+  fixes: Fix[];
+  totalCost: number;
+  remaining?: Scenario;
+  at: number;
+  /** The budget the user gave, and (if not everyone is safe) what it would cost on top to get there. */
+  budget?: number;
+  extraNeeded?: number;
+};
 export type Proposal = { repair: Repair; reasoning: string; source: Source; attempt: number; aiCost?: number; estimate: CostEstimate; model?: string } | null;
 export type AgentRuns = { attacker: number; defender: number; judge: number; geminiCalls: number; fallbackCalls: number; regressionChecks: number };
 
@@ -412,7 +423,7 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
   }, [preset.building, say]);
 
   /** attack → repair → judge → revise with the judge's reasons → judge (max 3 attempts). */
-  const runLoop = useCallback(async (forced?: { scenario: Scenario; reason: string }): Promise<"hardened" | "repaired" | "stuck" | "cancelled"> => {
+  const runLoop = useCallback(async (forced?: { scenario: Scenario; reason: string; fix?: PlannedFix }): Promise<"hardened" | "repaired" | "stuck" | "cancelled"> => {
     const token = ++runToken.current;
     let found: { scenario: Scenario; result: TestResult } | null;
     if (forced) {
@@ -426,6 +437,21 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
     }
     if (token !== runToken.current) return "cancelled";
     if (!found || found.result.unreachableOccupantIds.length === 0) return "hardened";
+    if (forced?.fix) {
+      // Planned by the budget optimiser: best protection per pound that still fits the budget.
+      setPhase("defending");
+      setAudit(null);
+      bump("defender");
+      await wait(150);
+      const p: NonNullable<Proposal> = { repair: forced.fix.repair, estimate: forced.fix.estimate, reasoning: forced.fix.reasoning.replace("Cheapest fix that passes the judge", "Best value within your budget"), source: "fallback", attempt: 1 };
+      setProposal(p);
+      setPhase("proposed");
+      say("defender", `Proposes ${describeRepair(p.repair)} · £${p.repair.cost.toLocaleString("en-GB")}.`, "ai");
+      await wait(120);
+      if (token !== runToken.current) return "cancelled";
+      const a = await judgeFor(found.scenario, p);
+      return a.accepted ? "repaired" : "stuck";
+    }
     let fb: Feedback[] = [];
     for (let i = 0; i < 3; i++) {
       await wait(80);
@@ -439,7 +465,7 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
       fb = [...fb, { repair: p.repair, reasons: a.reasons }];
     }
     return "stuck";
-  }, [applyScenario, attack, defendFor, judgeFor]);
+  }, [applyScenario, attack, defendFor, judgeFor, say]);
 
   /** Pre-written proposals so the rejection moment is guaranteed; verdicts are live. */
   const runSignatureDemo = useCallback(async () => {
@@ -506,53 +532,49 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
       say("system", `Autopilot engaged. Target: no combination of up to ${con.tolerance} failure(s) strands anyone. The attacker invents blockages; the engine sweeps every combination before signing off.`, "ai");
       let status: Report["status"] = "stopped";
       let remaining: Scenario | undefined;
-      let finalPass = false;
-      for (let round = 1; round <= 24; round++) {
+      const recall = () => con.liftsRecalled || alarmRef.current;
+      // Round 1: the lead brain (Gemini 4 Argon, or the built-in attacker) picks the first blockage itself.
+      await wait(150);
+      if (autopilotRef.current) {
+        const r1 = await runLoopRef.current();
+        if (r1 === "cancelled") autopilotRef.current = false;
+      }
+      // Then: the budget optimiser picks the fix that protects the most people per pound and still fits.
+      for (let round = 2; round <= 40 && autopilotRef.current; round++) {
         await wait(150);
-        if (!autopilotRef.current) break;
         const cert = certify(S.current.building, con.tolerance, lifts(), OPTS);
-        let r: "hardened" | "repaired" | "stuck" | "cancelled";
-        if (round === 1) {
-          // Lead brain: Argon (or the built-in attacker) invents the blockage itself.
-          if (cert.faultFree) {
-            finalPass = true;
-            say("system", "The engine finds no remaining weakness. Final pass: the attacker looks for anything the sweep's rules could miss.", "ai");
-          }
-          r = await runLoopRef.current();
-          if (r === "hardened" && cert.faultFree) {
-            status = "fault-free";
-            break;
-          }
-          if (r === "hardened") continue;
-        } else if (cert.faultFree) {
+        if (cert.faultFree) {
           status = "fault-free";
           break;
-        } else {
-          // Follow-ups: the exhaustive sweep finds the next weakness (most people at risk first); a fast subagent fixes it.
-          const w = occupantWeights(S.current.building);
-          const people = (ids: string[]) => ids.reduce((acc, id) => acc + (w[id] ?? 1), 0);
-          const minK = cert.failures[0].scenario.blockedConnectionIds.length;
-          const f = [...cert.failures].filter((x) => x.scenario.blockedConnectionIds.length === minK).sort((a, b) => people(b.result.unreachableOccupantIds) - people(a.result.unreachableOccupantIds))[0];
-          remaining = f.scenario;
-          const plain = describeBlocked(S.current.building, f.scenario.blockedConnectionIds.filter((id) => !lifts().includes(id)));
-          say("judge", `Sweep: ${cert.scenariosChecked} scenarios checked, ${cert.failures.length} still trap someone. Next: fire blocks ${plain}.`, "warn");
-          r = await runLoopRef.current({
-            scenario: { ...f.scenario, name: `Fire blocks ${plain}` },
-            reason: `The engine's sweep found that blocking ${f.scenario.blockedConnectionIds.join(" + ")} strands ${f.result.unreachableOccupantIds.join(", ")}.`,
-          });
         }
+        const next = bestNextFix(S.current.building, con.tolerance, recall(), S.current.budgetLeft, S.current.rates, con.allow);
+        if (!next) {
+          status = "over-budget";
+          remaining = cert.failures[0]?.scenario;
+          say("system", `No remaining fix fits the £${S.current.budgetLeft.toLocaleString("en-GB")} left in your budget.`, "warn");
+          break;
+        }
+        const blocked = next.scenario.blockedConnectionIds.filter((id) => !lifts().includes(id));
+        const plain = blocked.length ? `Fire blocks ${describeBlocked(S.current.building, blocked)}` : "Fire alarm: lifts recalled";
+        say("judge", `${cert.failures.length} blocked-path scenario(s) still trap someone. Best value next: ${plain.toLowerCase()}.`, "warn");
+        const r = await runLoopRef.current({ scenario: { ...next.scenario, name: plain }, reason: `Fixing this protects the most people per pound.`, fix: next });
         if (r === "cancelled") break;
         if (r === "stuck") {
           status = "stuck";
           remaining = S.current.scenario;
-          say("system", "Autopilot stopped: no fix within budget and constraints passes the judge for the last failure. Raise the budget or allow more repair types.", "warn");
           break;
         }
       }
       if (autopilotRef.current && sweepRef.current) await sweepRef.current("Final check: re-testing every blocked path", 1800);
       const certificate = certify(S.current.building, con.tolerance, lifts(), OPTS);
       if (certificate.faultFree) status = "fault-free";
-      setReport({ status, certificate, fixes: S.current.fixes, totalCost: S.current.spent, remaining: certificate.faultFree ? undefined : remaining ?? certificate.failures[0]?.scenario, at: Date.now() });
+      let extraNeeded: number | undefined;
+      if (!certificate.faultFree) {
+        say("system", "Working out what it would cost to get everyone out…", "ai");
+        await wait(60);
+        extraNeeded = costToMakeSafe(S.current.building, con.tolerance, recall(), S.current.rates, con.allow);
+      }
+      setReport({ status, certificate, fixes: S.current.fixes, totalCost: S.current.spent, remaining: certificate.faultFree ? undefined : remaining ?? certificate.failures[0]?.scenario, at: Date.now(), budget: con.budget, extraNeeded });
       say("system", certificate.faultFree ? `Certified fault-free against any ${con.tolerance} failure(s): ${certificate.scenariosChecked} combinations checked, ${S.current.fixes.length} change(s), £${S.current.spent.toLocaleString("en-GB")}.` : "Autopilot finished with failures remaining. See the report.", certificate.faultFree ? "good" : "warn");
       autopilotBusy.current = false;
       setAutopilot(false);

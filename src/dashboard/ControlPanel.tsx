@@ -6,6 +6,7 @@ import type { Constraints, DemoController, RepairKind } from "./useDemoControlle
 const fmt = (n: number) => n.toLocaleString("en-GB");
 
 export function ControlPanel({
+  onStart,
   c,
   stress,
   stressOn,
@@ -17,6 +18,7 @@ export function ControlPanel({
   constraints,
   setConstraints,
 }: {
+  onStart?: () => void;
   c: DemoController;
   stress: StressStats;
   stressOn: boolean;
@@ -44,7 +46,7 @@ export function ControlPanel({
         <button
           className={`btn btn-fire ${c.alarm ? "is-running" : ""}`}
           disabled={c.busy && !c.alarm}
-          onClick={() => (c.alarm ? c.resetAll() : c.activateAlarm())}
+          onClick={() => (c.alarm ? c.resetAll() : (onStart ?? c.activateAlarm)())}
         >
           <span className="btn-icon">{c.alarm ? "■" : "🔔"}</span>
           <span>

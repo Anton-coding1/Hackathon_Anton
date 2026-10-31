@@ -31,6 +31,11 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
   const logBox = useRef<HTMLDivElement>(null);
   void autoplay; // the demo never starts by itself: the user presses "Activate fire alarm"
   const [helpOpen, setHelpOpen] = useState(false);
+  const [budgetDraft, setBudgetDraft] = useState(150000);
+  const startWithBudget = () => {
+    setConstraints((k) => ({ ...k, budget: budgetDraft }));
+    setTimeout(() => c.activateAlarm(), 80);
+  };
   // The plan as built so far: every verified change applied to walls, rooms and shafts.
   const planned = useMemo(() => planChanges(preset.plan ?? autoPlan(c.building), c.building, c.fixes.map((f) => f.repair)), [preset.plan, c.building, c.fixes]);
 
@@ -200,12 +205,32 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
           <b>3D model</b> · {exploded ? "exploded axonometric" : "stacked"} · {stress.done ? `${stress.evaluated.toLocaleString("en-GB")} stress scenarios checked` : `${(stress.perSecond || 0).toLocaleString("en-GB")} scenarios/s`}
         </div>
         {!c.alarm && !focus && !c.report && c.fixes.length === 0 && (
-          <div className="cta-overlay">
-            <p>Normal day. Everyone can get out. What happens when the fire alarm goes off?</p>
-            <button className="cta-fire" onClick={() => c.activateAlarm()}>
+          <div className="cta-overlay budget-ask">
+            <span className="kicker-sm">Step 1 · your budget</span>
+            <p>How much can you spend on safety improvements?</p>
+            <label className="budget-input">
+              <span>£</span>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={budgetDraft.toLocaleString("en-GB")}
+                onFocus={(e) => e.target.select()}
+                onChange={(e) => setBudgetDraft(Math.min(50_000_000, Number(e.target.value.replace(/[^0-9]/g, "")) || 0))}
+                onKeyDown={(e) => e.key === "Enter" && startWithBudget()}
+                autoFocus
+              />
+            </label>
+            <div className="budget-chips">
+              {[25000, 75000, 150000, 500000].map((v) => (
+                <button key={v} className={budgetDraft === v ? "on" : ""} onClick={() => setBudgetDraft(v)}>
+                  £{v >= 1000 ? `${v / 1000}k` : v}
+                </button>
+              ))}
+            </div>
+            <button className="cta-fire" onClick={startWithBudget}>
               <span>🔔</span> Activate fire alarm
             </button>
-            <small>The AI agents then test every escape route themselves. You don&apos;t choose anything.</small>
+            <small>The agents test every escape route, then find the best set of changes that fits £{budgetDraft.toLocaleString("en-GB")} and tell you whether everyone can get out.</small>
           </div>
         )}
         {c.alarm && (
@@ -273,7 +298,7 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
           </div>
         )}
         {c.verdictFlash && <VerdictStamp key={c.verdictFlash.key} accepted={c.verdictFlash.accepted} text={c.verdictFlash.text} />}
-        <ControlPanel c={c} stress={stress} stressOn={stressOn} setStressOn={setStressOn} exploded={exploded} setExploded={setExploded} labels={labels} setLabels={setLabels} constraints={constraints} setConstraints={setConstraints} />
+        <ControlPanel onStart={startWithBudget} c={c} stress={stress} stressOn={stressOn} setStressOn={setStressOn} exploded={exploded} setExploded={setExploded} labels={labels} setLabels={setLabels} constraints={constraints} setConstraints={setConstraints} />
         <ResultsPanel c={c} stress={stress} onDownload={onDownload} />
 
         <section className="drawer">
@@ -350,7 +375,7 @@ function ReportModal({ c, changes, onDownload, onPlan }: { c: ReturnType<typeof 
       <div className="modal-card report" onClick={(e) => e.stopPropagation()}>
         <header>
           <b>Resilience report · {c.preset.title}</b>
-          <span className={`badge ${ok ? "badge-engine" : "badge-fallback"}`}>{ok ? "fault-free" : "failures remain"}</span>
+          <span className={`badge ${ok ? "badge-engine" : "badge-fallback"}`}>{ok ? "within budget" : "over budget"}</span>
           <div className="dl">
             <button className="btn btn-sm" onClick={() => c.setReport(null)}>
               Close
@@ -359,11 +384,17 @@ function ReportModal({ c, changes, onDownload, onPlan }: { c: ReturnType<typeof 
         </header>
         <div className="report-body">
           <div className={`report-hero ${ok ? "ok" : "bad"}`}>
-            <b>{ok ? "Everyone can get out" : "Not everyone can get out yet"}</b>
+            <b>{ok ? `Yes. Everyone can get out, within your £${(r.budget ?? c.budget).toLocaleString("en-GB")} budget` : `Not within your £${(r.budget ?? c.budget).toLocaleString("en-GB")} budget`}</b>
             <span>
               {ok
-                ? `With the fire alarm on and lifts recalled, whichever ${r.certificate.tolerance === 1 ? "path" : `${r.certificate.tolerance} paths`} fire blocks, everyone still has another way out. ${r.certificate.scenariosChecked} scenarios checked exhaustively.`
-                : `${r.certificate.failures.length} combination(s) still strand someone${r.remaining ? `, e.g. ${r.remaining.blockedConnectionIds.join(" + ")}` : ""}. Raise the budget or allow more repair types and run again.`}
+                ? `With the fire alarm on and lifts recalled, whichever ${r.certificate.tolerance === 1 ? "path" : `${r.certificate.tolerance} paths`} fire blocks, everyone still has another way out. Total £${r.totalCost.toLocaleString("en-GB")}, leaving £${Math.max(0, (r.budget ?? c.budget) - r.totalCost).toLocaleString("en-GB")} unspent. ${r.certificate.scenariosChecked} scenarios checked.`
+                : `${r.fixes.length ? `Your budget covers ${r.fixes.length} change(s) (£${r.totalCost.toLocaleString("en-GB")}) chosen to protect the most people per pound, but` : "No change that helps fits this budget, so"} ${r.certificate.failures.length} blocked-path scenario(s) still trap someone. ${
+                    r.extraNeeded !== undefined && Number.isFinite(r.extraNeeded)
+                      ? r.totalCost > 0
+                        ? `Getting everyone out needs about £${r.extraNeeded.toLocaleString("en-GB")} more (≈ £${(r.totalCost + r.extraNeeded).toLocaleString("en-GB")} in total).`
+                        : `Getting everyone out needs a budget of about £${r.extraNeeded.toLocaleString("en-GB")}.`
+                      : "No combination of the allowed changes could get everyone out."
+                  }`}
             </span>
           </div>
           <h4>What the agents found, and what fixed it</h4>
