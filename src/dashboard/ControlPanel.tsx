@@ -106,22 +106,9 @@ export function ControlPanel({
 
       <section>
         <h3>Design constraints</h3>
-        <label className="field">
-          <span>
-            Budget <b>£{constraints.budget.toLocaleString("en-GB")}</b>
-          </span>
-          <input
-            type="range"
-            min={5000}
-            max={2000000}
-            step={10000}
-            value={constraints.budget}
-            disabled={c.busy}
-            onChange={(e) => setConstraints({ ...constraints, budget: Number(e.target.value) })}
-          />
-        </label>
         <details className="adv">
           <summary>Advanced</summary>
+        <p className="hint">No budget needed: the agents find the minimum cost that gets everyone out.</p>
         <div className="field" style={{ marginTop: 10 }}>
           <span>Resilience target</span>
           <div className="seg">

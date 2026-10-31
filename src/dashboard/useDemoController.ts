@@ -3,10 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Building, FailurePassport, Repair, RepairAudit, Scenario, TestResult } from "@/contracts/types";
 import type { BuildingPreset } from "@/data/buildings";
-import { addedConnections, auditRepair, certify, describeBlocked, occupantWeights, simulate, withConnection, withConnections, type Certificate } from "@/engine";
+import { addedConnections, auditRepair, certify, validateRepair, describeBlocked, occupantWeights, simulate, withConnection, withConnections, type Certificate } from "@/engine";
 import { DEFAULT_RATES, withModelledCost, type CostEstimate, type CostRates } from "@/cost/costModel";
 import { fallbackAttack, fallbackRepair, repairKind } from "./fallbackAgents";
-import { bestNextFix, costToMakeSafe, type PlannedFix } from "./budgetPlanner";
+import { minimumPlan, nextFromPlan, type PlannedFix } from "./budgetPlanner";
 
 export type Source = "gemini" | "fallback" | "judge" | "scripted";
 export type Phase = "idle" | "alarm" | "sweeping" | "attacking" | "attacked" | "defending" | "proposed" | "auditing" | "approval" | "accepted" | "rejected";
@@ -14,6 +14,8 @@ export type LogEntry = { id: number; at: number; role: "attacker" | "defender" |
 export type PassportMeta = { createdAt: number; source: Source; attempts: number };
 export type GeminiStatus = { checked: boolean; configured: boolean; model: string; fastModel?: string; status?: "ok" | "no-key" | "invalid-key" | "model-unavailable" | "unreachable"; detail?: string };
 export type RepairKind = "corridor" | "stairs" | "lift" | "ramp" | "unblock";
+const NO_BUDGET_LIMIT = 1_000_000_000;
+
 export type Constraints = { budget: number; liftsRecalled: boolean; tolerance: 1 | 2; approveOver: number; allow: Record<RepairKind, boolean> };
 export type Fix = { scenario: Scenario; stranded: string[]; repair: Repair; source: Source; attempts: number; rejected: number };
 export type Report = {
@@ -38,7 +40,8 @@ const BASELINE: Scenario = { id: "BASELINE", name: "Normal operation", blockedCo
 const ZERO_RUNS: AgentRuns = { attacker: 0, defender: 0, judge: 0, geminiCalls: 0, fallbackCalls: 0, regressionChecks: 0 };
 
 export function defaultConstraints(preset: BuildingPreset): Constraints {
-  return { budget: preset.defaultBudget, liftsRecalled: false, tolerance: preset.defaultTolerance, approveOver: Number.POSITIVE_INFINITY, allow: { corridor: true, stairs: true, lift: true, ramp: true, unblock: true } };
+  // No budget to pick: the agents find the minimum cost that gets everyone out.
+  return { budget: NO_BUDGET_LIMIT, liftsRecalled: false, tolerance: preset.defaultTolerance, approveOver: Number.POSITIVE_INFINITY, allow: { corridor: true, stairs: true, lift: true, ramp: true, unblock: true } };
 }
 
 /** Non-evacuation lifts, which are recalled when lifts are assumed unusable in an emergency. */
@@ -236,14 +239,14 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
       bump("defender");
       const useGemini = g.configured && fb.length < 1 && tier === "lead" && geminiWindow(); // after two rejections, a deterministic backstop keeps the run moving
       const modelName = tier === "fast" ? g.fastModel ?? "Flash" : g.model;
-      say("defender", `${useGemini ? `${modelName} is designing` : "Designing"} repair attempt ${fb.length + 1} (budget £${left.toLocaleString("en-GB")})…`, "ai");
+      say("defender", `${useGemini ? `${modelName} is designing` : "Designing"} repair attempt ${fb.length + 1}…`, "ai");
       try {
         let p: Proposal = null;
         try {
           if (!useGemini) throw new Error(g.configured ? "backstop" : "not configured");
           bump("geminiCalls");
           const allowed = (Object.keys(con.allow) as RepairKind[]).filter((k) => con.allow[k]);
-          const data = await callAgents({ action: "defend", building: b, scenario: s, result: r, budget: left, feedback: fb, constraints: { allowed, rates: rt.rates }, tier });
+          const data = await callAgents({ action: "defend", building: b, scenario: s, result: r, budget: Math.min(left, 5_000_000), feedback: fb, constraints: { allowed, rates: rt.rates }, tier });
           const priced = withModelledCost(data.repair, b, rt);
           p = { repair: priced.repair, estimate: priced.estimate, aiCost: data.repair.cost, reasoning: data.reasoning || "", source: "gemini", attempt: fb.length + 1, model: data.model };
           await wait(80);
@@ -273,9 +276,10 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
 
   /* ---------------- judge ---------------- */
   const judgeFor = useCallback(
-    async (s: Scenario, p0: NonNullable<Proposal>): Promise<RepairAudit> => {
+    async (s: Scenario, p0: NonNullable<Proposal>, part?: { stillTrapped: string[]; enabling?: boolean }): Promise<RepairAudit> => {
       let p = p0;
       const { building: b, regressions: regs, budgetLeft: left, constraints: con } = S.current;
+      const label = (ids: string[]) => ids.map((id) => b.occupants.find((o) => o.id === id)?.label ?? id).join(", ");
       setBusy(true);
       setPhase("auditing");
       bump("judge");
@@ -283,7 +287,28 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
       bump("regressionChecks", regSet.length);
       say("judge", `Re-solving the target scenario and ${regSet.length} stored regression(s)…`, "ai");
       await wait(250);
-      let a = auditRepair(b, s, p.repair, regSet, left);
+      let a: RepairAudit;
+      if (part?.enabling) {
+        // Needed together with a later change: on its own it rescues nobody yet, so check it traps nobody new.
+        const problems = validateRepair(b, s, p.repair);
+        const before = simulate(b, s);
+        a = {
+          accepted: problems.length === 0,
+          cost: p.repair.cost,
+          budget: left,
+          before,
+          after: before,
+          regressions: [],
+          reasons: problems.length ? problems.map((x) => `Rejected: ${x}`) : ["Accepted: this change works together with the next one; on its own it does not yet complete an escape route."],
+        };
+      } else if (part && part.stillTrapped.length) {
+        // A combined fix: judge it strictly on the people it gets out; the rest need the next change.
+        const focus = { ...b, occupants: b.occupants.filter((o) => !part.stillTrapped.includes(o.id)) };
+        a = auditRepair(focus, s, p.repair, regSet, left);
+        if (a.accepted) a = { ...a, reasons: [...a.reasons.slice(0, 1), `Part of a combined fix: ${label(part.stillTrapped)} still need${part.stillTrapped.length === 1 ? "s" : ""} the next change in this scenario.`, ...a.reasons.slice(1)] };
+      } else {
+        a = auditRepair(b, s, p.repair, regSet, left);
+      }
       const kind = repairKind(p.repair);
       const reopenDoor = p.repair.kind === "unblock_connection" && b.connections.find((c) => c.id === (p.repair as { connectionId: string }).connectionId)?.kind !== "lift";
       if (autopilotRef.current && reopenDoor && a.accepted) {
@@ -423,7 +448,7 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
   }, [preset.building, say]);
 
   /** attack → repair → judge → revise with the judge's reasons → judge (max 3 attempts). */
-  const runLoop = useCallback(async (forced?: { scenario: Scenario; reason: string; fix?: PlannedFix }): Promise<"hardened" | "repaired" | "stuck" | "cancelled"> => {
+  const runLoop = useCallback(async (forced?: { scenario: Scenario; reason: string; fix?: PlannedFix; enabling?: boolean }): Promise<"hardened" | "repaired" | "stuck" | "cancelled"> => {
     const token = ++runToken.current;
     let found: { scenario: Scenario; result: TestResult } | null;
     if (forced) {
@@ -436,20 +461,20 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
       found = await attack();
     }
     if (token !== runToken.current) return "cancelled";
-    if (!found || found.result.unreachableOccupantIds.length === 0) return "hardened";
+    if (!found || (found.result.unreachableOccupantIds.length === 0 && !forced?.enabling)) return "hardened";
     if (forced?.fix) {
       // Planned by the budget optimiser: best protection per pound that still fits the budget.
       setPhase("defending");
       setAudit(null);
       bump("defender");
       await wait(150);
-      const p: NonNullable<Proposal> = { repair: forced.fix.repair, estimate: forced.fix.estimate, reasoning: forced.fix.reasoning.replace("Cheapest fix that passes the judge", "Best value within your budget"), source: "fallback", attempt: 1 };
+      const p: NonNullable<Proposal> = { repair: forced.fix.repair, estimate: forced.fix.estimate, reasoning: forced.fix.reasoning.replace("Cheapest fix that passes the judge", "Part of the minimum-cost plan"), source: "fallback", attempt: 1 };
       setProposal(p);
       setPhase("proposed");
       say("defender", `Proposes ${describeRepair(p.repair)} · £${p.repair.cost.toLocaleString("en-GB")}.`, "ai");
       await wait(120);
       if (token !== runToken.current) return "cancelled";
-      const a = await judgeFor(found.scenario, p);
+      const a = await judgeFor(found.scenario, p, { stillTrapped: forced.fix.stillTrapped, enabling: forced.enabling });
       return a.accepted ? "repaired" : "stuck";
     }
     let fb: Feedback[] = [];
@@ -539,25 +564,31 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
         const r1 = await runLoopRef.current();
         if (r1 === "cancelled") autopilotRef.current = false;
       }
-      // Then: the budget optimiser picks the fix that protects the most people per pound and still fits.
-      for (let round = 2; round <= 40 && autopilotRef.current; round++) {
-        await wait(150);
+      // Then: the optimiser works out the minimum-cost set of changes that gets everyone out, and builds it.
+      let plan: ReturnType<typeof minimumPlan> | null = null;
+      if (autopilotRef.current && !certify(S.current.building, con.tolerance, lifts(), OPTS).faultFree) {
+        say("system", "Optimiser: searching for the minimum-cost set of changes that gets everyone out…", "ai");
+        await wait(80);
+        plan = minimumPlan(S.current.building, con.tolerance, recall(), S.current.rates, con.allow);
+        if (plan.everyoneSafe)
+          say("system", `Optimiser: ${plan.repairs.length} more change(s), £${plan.cost.toLocaleString("en-GB")}${plan.pruned ? ` (${plan.pruned} unnecessary change(s) removed)` : ""}. Building them now.`, "good");
+        else say("system", "Optimiser: no combination of the allowed changes gets everyone out. Building what helps.", "warn");
+      }
+      let todo = plan?.repairs ?? [];
+      for (let round = 2; round <= 60 && autopilotRef.current && todo.length; round++) {
+        await wait(120);
         const cert = certify(S.current.building, con.tolerance, lifts(), OPTS);
         if (cert.faultFree) {
           status = "fault-free";
           break;
         }
-        const next = bestNextFix(S.current.building, con.tolerance, recall(), S.current.budgetLeft, S.current.rates, con.allow);
-        if (!next) {
-          status = "over-budget";
-          remaining = cert.failures[0]?.scenario;
-          say("system", `No remaining fix fits the £${S.current.budgetLeft.toLocaleString("en-GB")} left in your budget.`, "warn");
-          break;
-        }
-        const blocked = next.scenario.blockedConnectionIds.filter((id) => !lifts().includes(id));
+        const next = nextFromPlan(S.current.building, todo, con.tolerance, recall());
+        if (!next) break;
+        todo = todo.filter((_, i) => i !== next.index);
+        const blocked = next.fix.scenario.blockedConnectionIds.filter((id) => !lifts().includes(id));
         const plain = blocked.length ? `Fire blocks ${describeBlocked(S.current.building, blocked)}` : "Fire alarm: lifts recalled";
-        say("judge", `${cert.failures.length} blocked-path scenario(s) still trap someone. Best value next: ${plain.toLowerCase()}.`, "warn");
-        const r = await runLoopRef.current({ scenario: { ...next.scenario, name: plain }, reason: `Fixing this protects the most people per pound.`, fix: next });
+        say("judge", `${cert.failures.length} blocked-path scenario(s) still trap someone. Next: ${plain.toLowerCase()}.`, "warn");
+        const r = await runLoopRef.current({ scenario: { ...next.fix.scenario, name: plain }, reason: "Part of the minimum-cost plan.", fix: next.fix, enabling: next.enabling });
         if (r === "cancelled") break;
         if (r === "stuck") {
           status = "stuck";
@@ -568,14 +599,9 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
       if (autopilotRef.current && sweepRef.current) await sweepRef.current("Final check: re-testing every blocked path", 1800);
       const certificate = certify(S.current.building, con.tolerance, lifts(), OPTS);
       if (certificate.faultFree) status = "fault-free";
-      let extraNeeded: number | undefined;
-      if (!certificate.faultFree) {
-        say("system", "Working out what it would cost to get everyone out…", "ai");
-        await wait(60);
-        extraNeeded = costToMakeSafe(S.current.building, con.tolerance, recall(), S.current.rates, con.allow);
-      }
-      setReport({ status, certificate, fixes: S.current.fixes, totalCost: S.current.spent, remaining: certificate.faultFree ? undefined : remaining ?? certificate.failures[0]?.scenario, at: Date.now(), budget: con.budget, extraNeeded });
-      say("system", certificate.faultFree ? `Certified fault-free against any ${con.tolerance} failure(s): ${certificate.scenariosChecked} combinations checked, ${S.current.fixes.length} change(s), £${S.current.spent.toLocaleString("en-GB")}.` : "Autopilot finished with failures remaining. See the report.", certificate.faultFree ? "good" : "warn");
+      if (!certificate.faultFree && status === "fault-free") status = "stuck";
+      setReport({ status, certificate, fixes: S.current.fixes, totalCost: S.current.spent, remaining: certificate.faultFree ? undefined : remaining ?? certificate.failures[0]?.scenario, at: Date.now() });
+      say("system", certificate.faultFree ? `Everyone can get out: ${certificate.scenariosChecked} scenarios checked. Minimum cost ${S.current.spent ? `£${S.current.spent.toLocaleString("en-GB")} for ${S.current.fixes.length} change(s)` : "£0, no changes needed"}.` : "Finished with failures remaining. See the report.", certificate.faultFree ? "good" : "warn");
       autopilotBusy.current = false;
       setAutopilot(false);
     })();

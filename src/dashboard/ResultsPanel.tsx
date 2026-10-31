@@ -13,7 +13,6 @@ export function SourceBadge({ source }: { source?: Source }) {
 export function ResultsPanel({ c, stress, onDownload }: { c: DemoController; stress: StressStats; onDownload: (kind: "svg" | "png" | "json") => void }) {
   const r = c.result;
   const ok = r.unreachableOccupantIds.length === 0;
-  const pct = Math.round((c.spent / c.budget) * 100);
   const verified = c.passports.filter((p) => p.audit?.accepted);
   const heat = Object.entries(stress.heat).sort((a, b) => b[1] - a[1]);
 
@@ -71,7 +70,7 @@ export function ResultsPanel({ c, stress, onDownload }: { c: DemoController; str
           {c.proposal && <span className="attempt">attempt {c.proposal.attempt}</span>}
         </header>
         {c.phase === "defending" ? (
-          <p className="thinking">{c.feedback.length ? "Revising with the judge's reasons" : "Designing a repair within budget"}</p>
+          <p className="thinking">{c.feedback.length ? "Revising with the judge's reasons" : "Designing the cheapest repair"}</p>
         ) : c.proposal ? (
           <>
             <div className="proposal-row">
@@ -147,14 +146,11 @@ export function ResultsPanel({ c, stress, onDownload }: { c: DemoController; str
 
       <section className="card">
         <header>
-          <span className="role">Budget</span>
-          <span className="muted small">fictional</span>
+          <span className="role">Cost so far</span>
+          <span className="muted small">modelled</span>
         </header>
-        <div className="meter">
-          <div style={{ width: `${pct}%` }} />
-        </div>
         <p className="small">
-          £{c.spent.toLocaleString("en-GB")} committed · £{c.budgetLeft.toLocaleString("en-GB")} of £{c.budget.toLocaleString("en-GB")} left
+          <b>£{c.spent.toLocaleString("en-GB")}</b> for {c.fixes.length} verified change(s). The agents keep this to the minimum that gets everyone out.
         </p>
       </section>
 

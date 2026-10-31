@@ -49,15 +49,8 @@ export function fallbackAttack(building: Building, tested: Scenario[], maxBlocke
   };
 }
 
-/** Cheapest candidate (by the cost model) that the judge accepts and the constraints allow. */
-export function fallbackRepair(
-  building: Building,
-  scenario: Scenario,
-  regressions: Scenario[],
-  budget: number,
-  rates: CostRates,
-  allow: Record<RepairKind, boolean>,
-): { repair: Repair; reasoning: string; estimate: CostEstimate } | null {
+/** Every physical change worth trying for this failure, priced and sorted cheapest first. */
+export function repairCandidates(building: Building, scenario: Scenario, rates: CostRates, allow: Record<RepairKind, boolean>): { repair: Repair; estimate: CostEstimate }[] {
   const candidates: Repair[] = [];
   const nodes = [...building.nodes].sort((a, b) => (a.id < b.id ? -1 : 1));
 
@@ -156,18 +149,30 @@ export function fallbackRepair(
   // Reopening only counts as a structural fix for lifts (secondary power makes it an evacuation lift);
   // reopening a door just removes today's obstruction and adds no resilience.
 
-  const priced = candidates.map((r) => withModelledCost(r, building, rates)).sort((x, y) => x.repair.cost - y.repair.cost);
-  for (const { repair, estimate } of priced) {
+  return candidates.map((r) => withModelledCost(r, building, rates)).sort((x, y) => x.repair.cost - y.repair.cost);
+}
+
+/** Plain-English reason for a search-found fix. */
+export function fixReason(repair: Repair, lead = "Cheapest fix that passes the judge"): string {
+  return repair.kind === "add_connections" || repair.kind === "upgrade_lift"
+    ? `${lead}: ${repair.label ?? "a multi-floor change"}.`
+    : repair.kind === "add_connection"
+    ? `${lead}: ${repair.connection.kind === "lift" ? "an evacuation lift" : repair.connection.kind === "stairs" ? "a new staircase" : repair.connection.kind === "door" ? "a second, separate door" : "a step-free corridor"} ${repair.connection.from} ↔ ${repair.connection.to}.`
+    : `${lead}: reopen ${repair.connectionId}.`;
+}
+
+/** Cheapest candidate (by the cost model) that the judge accepts and the constraints allow. */
+export function fallbackRepair(
+  building: Building,
+  scenario: Scenario,
+  regressions: Scenario[],
+  budget: number,
+  rates: CostRates,
+  allow: Record<RepairKind, boolean>,
+): { repair: Repair; reasoning: string; estimate: CostEstimate } | null {
+  for (const { repair, estimate } of repairCandidates(building, scenario, rates, allow)) {
     if (repair.cost > budget) break;
-    if (auditRepair(building, scenario, repair, regressions, budget).accepted) {
-      const why =
-        repair.kind === "add_connections" || repair.kind === "upgrade_lift"
-          ? `Cheapest fix that passes the judge: ${repair.label ?? "a multi-floor change"}.`
-          : repair.kind === "add_connection"
-          ? `Cheapest fix that passes the judge: ${repair.connection.kind === "lift" ? "an evacuation lift" : repair.connection.kind === "stairs" ? "a new staircase" : repair.connection.kind === "door" ? "a second, separate door" : "a step-free corridor"} ${repair.connection.from} ↔ ${repair.connection.to}.`
-          : `Cheapest fix that passes the judge: reopen ${(repair as { connectionId: string }).connectionId}.`;
-      return { repair, reasoning: why, estimate };
-    }
+    if (auditRepair(building, scenario, repair, regressions, budget).accepted) return { repair, reasoning: fixReason(repair), estimate };
   }
   return null;
 }
