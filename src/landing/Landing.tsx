@@ -98,9 +98,15 @@ export function Landing() {
             Gemini 4 Argon attacks your floor plan, designs costed fixes and argues with an independent judge until no single failure can trap anyone, down to the lift that gets recalled when the fire alarm sounds.
           </p>
           <div className="l-ctas">
-            <a className="l-btn l-btn-primary" href={`/lab?b=${bid}`}>
+            <button
+              className="l-btn l-btn-primary"
+              onClick={() => {
+                document.getElementById("live-card")?.scrollIntoView({ behavior: "smooth", block: "center" });
+                setTimeout(start, 700);
+              }}
+            >
               Run the live demo
-            </a>
+            </button>
             <a className="l-btn" href="#upload">
               Upload your floor plan
             </a>
@@ -121,7 +127,7 @@ export function Landing() {
           </div>
         </div>
 
-        <div className="l-demo-card l-hero-card">
+        <div className="l-demo-card l-hero-card" id="live-card">
           <div className="l-demo-scene">
             <BuildingScene building={b} scenario={shownScenario} result={result} plan={preset.plan} labelMode="minimal" exploded={preset.defaultExploded ?? true} />
             <div className={`l-verdict-float ${atRisk ? "risk" : "ok"}`}>
