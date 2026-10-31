@@ -1,12 +1,18 @@
 import type { Building, Connection, RepairAudit, Repair, TestResult } from "@/contracts/types";
 import { rectArea, type BuildingPlan, type FloorPlan, type Rect } from "@/data/demoPlan";
+import { autoPlan } from "@/data/autoPlan";
+import type { CostRates } from "@/cost/costModel";
 import { buildWalls } from "@/data/planWalls";
 
 export type PlanExportInput = {
   building: Building;
-  plan: BuildingPlan;
+  plan?: BuildingPlan;
+  runs?: { attacker: number; defender: number; judge: number; geminiCalls: number; fallbackCalls: number; regressionChecks: number };
+  scenariosEvaluated?: number;
+  rates?: CostRates;
   result: TestResult;
-  repairs: { repair: Repair; audit?: RepairAudit }[];
+  repairs: { repair: Repair; audit?: RepairAudit; scenario?: { name: string; blockedConnectionIds: string[] } }[];
+  certificate?: { faultFree: boolean; tolerance: number; checked: number };
   budget: number;
   regressionsPassed?: { passed: number; total: number };
 };
@@ -25,14 +31,15 @@ const ftIn = (m: number) => {
  * Estate-agent / architect style floor plan of every level, with verified repairs
  * highlighted, escape routes, a cost schedule and a title block. Returns SVG text.
  */
-export function buildPlanSvg({ building, plan, result, repairs, budget, regressionsPassed }: PlanExportInput): string {
+export function buildPlanSvg({ building, plan: planIn, result, repairs, budget, regressionsPassed, runs, scenariosEvaluated, rates, certificate }: PlanExportInput): string {
+  const plan = planIn ?? autoPlan(building);
   const floors = plan.floors;
   const minX = Math.min(...floors.map((f) => f.footprint[0])) - 6;
   const maxX = Math.max(...floors.map((f) => f.footprint[2])) + 6;
   const width = Math.round((maxX - minX) * S + PAD * 2);
   const headerH = 150;
   const floorBlocks = floors.map((f) => (f.footprint[3] - f.footprint[1]) * S + 110);
-  const scheduleH = 70 + Math.max(1, repairs.length) * 26 + 60;
+  const scheduleH = 70 + Math.max(1, repairs.length) * 42 + 110;
   const height = Math.round(headerH + floorBlocks.reduce((a, b) => a + b, 0) + scheduleH + 90);
   const X = (x: number) => PAD + (x - minX) * S;
   const nodes = new Map(building.nodes.map((n) => [n.id, n]));
@@ -76,7 +83,20 @@ export function buildPlanSvg({ building, plan, result, repairs, budget, regressi
       if (!addedIds.has(c.id)) continue;
       const a = nodes.get(c.from);
       const b = nodes.get(c.to);
-      if (!a || !b || a.floor !== f.floor || b.floor !== f.floor) continue;
+      if (!a || !b) continue;
+      if (a.floor !== b.floor) {
+        if (Math.max(a.floor, b.floor) !== f.floor) continue;
+        const U0 = a.floor > b.floor ? a : b;
+        const hx = X(U0.position[0]);
+        const hy = Z(U0.position[2]);
+        const cost = repairs.find((x) => x.repair.kind === "add_connection" && x.repair.connection.id === c.id)?.repair.cost ?? 0;
+        const lx = Math.min(Math.max(hx, X(f.footprint[0]) + 430), X(f.footprint[2]) - 160);
+        const ly = Z(f.footprint[1]) - 12;
+        callouts.push(`<line x1="${hx}" y1="${hy}" x2="${lx}" y2="${ly}" stroke="#2563eb" stroke-width="1.5"/><circle cx="${hx}" cy="${hy}" r="4" fill="#2563eb"/>`);
+        callouts.push(`<g><rect x="${lx - 150}" y="${ly - 30}" width="300" height="34" rx="5" fill="#2563eb"/><text x="${lx}" y="${ly - 16}" font-size="11" font-weight="700" fill="#fff" text-anchor="middle" letter-spacing="1">PROPOSED · ${esc(c.id)} · ${c.kind === "lift" ? (c.evacuationLift ? "EVACUATION LIFT" : "LIFT") : "STAIR"}</text><text x="${lx}" y="${ly - 3}" font-size="10.5" fill="#dbeafe" text-anchor="middle">${esc(c.from)} ↔ ${esc(c.to)} · £${cost.toLocaleString("en-GB")}</text></g>`);
+        continue;
+      }
+      if (a.floor !== f.floor) continue;
       const [ax, az] = [a.position[0], a.position[2]];
       const [bx, bz] = [b.position[0], b.position[2]];
       const horiz = Math.abs(bx - ax) >= Math.abs(bz - az);
@@ -98,6 +118,17 @@ export function buildPlanSvg({ building, plan, result, repairs, budget, regressi
       const b = nodes.get(c.to);
       if (!a || !b || a.floor === b.floor) continue;
       if (a.floor !== f.floor && b.floor !== f.floor) continue;
+      if (c.kind === "lift") {
+        const U0 = a.floor > b.floor ? a : b;
+        const lx = X(U0.position[0]);
+        const lz = Z(U0.position[2]);
+        const h = 0.9 * S;
+        const col = c.evacuationLift ? "#16a34a" : "#374151";
+        const isNew = addedIds.has(c.id);
+        out.push(`<rect x="${lx - h}" y="${lz - h}" width="${2 * h}" height="${2 * h}" fill="${isNew ? "url(#hatch)" : "#fff"}" stroke="${isNew ? "#2563eb" : col}" stroke-width="2"/><line x1="${lx - h}" y1="${lz - h}" x2="${lx + h}" y2="${lz + h}" stroke="${col}" stroke-width="1"/><line x1="${lx + h}" y1="${lz - h}" x2="${lx - h}" y2="${lz + h}" stroke="${col}" stroke-width="1"/>`);
+        out.push(`<text x="${lx}" y="${lz + h + 12}" font-size="9" font-weight="700" fill="${col}" text-anchor="middle">${esc(c.id)} ${c.evacuationLift ? "EVAC LIFT" : "LIFT"}</text>`);
+        continue;
+      }
       const U = a.floor > b.floor ? a : b;
       const L = a.floor > b.floor ? b : a;
       const dir = Math.sign(L.position[0] - U.position[0]) || 1;
@@ -183,20 +214,25 @@ export function buildPlanSvg({ building, plan, result, repairs, budget, regressi
   out.push(`<text x="${tableX}" y="${ty}" font-size="15" font-weight="800" letter-spacing="2" fill="#111827">SCHEDULE OF VERIFIED CHANGES</text>`);
   ty += 14;
   out.push(`<line x1="${tableX}" y1="${ty}" x2="${width - PAD}" y2="${ty}" stroke="#111827"/>`);
-  const cols = [tableX, tableX + 110, tableX + 520, tableX + 680, tableX + 820];
+  const cols = [tableX, tableX + 110, tableX + 560, tableX + 700, tableX + 820];
   ty += 20;
-  ["Ref", "Change", "Judge verdict", "Length", "Cost"].forEach((h, k) => out.push(`<text x="${cols[k]}" y="${ty}" font-size="11" font-weight="700" fill="#6b7280">${h.toUpperCase()}</text>`));
+  ["Ref", "Change · scenario it resolves", "Judge verdict", "Length", "Cost"].forEach((h, k) => out.push(`<text x="${cols[k]}" y="${ty}" font-size="11" font-weight="700" fill="#6b7280">${h.toUpperCase()}</text>`));
   const accepted = repairs.filter((r) => r.audit?.accepted);
   if (accepted.length === 0) {
     ty += 26;
     out.push(`<text x="${cols[0]}" y="${ty}" font-size="12" fill="#6b7280">No changes verified yet: this is the existing layout.</text>`);
   }
   for (const r of accepted) {
-    ty += 26;
+    ty += 34;
     const c = r.repair.kind === "add_connection" ? r.repair.connection : null;
-    const desc = c ? `New ${c.stepFree ? "step-free " : ""}link ${c.from} ↔ ${c.to}` : `Clear obstruction on ${(r.repair as { connectionId: string }).connectionId}`;
+    const desc = c
+      ? c.kind === "lift"
+        ? `New ${c.evacuationLift ? "evacuation " : ""}lift ${c.from} ↔ ${c.to}`
+        : `New ${c.stepFree ? "step-free " : ""}${c.kind === "stairs" || !c.stepFree ? "staircase" : "link"} ${c.from} ↔ ${c.to}`
+      : `Reopen ${(r.repair as { connectionId: string }).connectionId}${building.connections.find((x) => x.id === (r.repair as { connectionId: string }).connectionId)?.kind === "lift" ? " (secondary power + evacuation controls)" : ""}`;
     out.push(`<text x="${cols[0]}" y="${ty}" font-size="12" font-weight="700" fill="#2563eb">${esc(c?.id ?? (r.repair as { connectionId: string }).connectionId)}</text>`);
     out.push(`<text x="${cols[1]}" y="${ty}" font-size="12" fill="#111827">${esc(desc)}</text>`);
+    if (r.scenario) out.push(`<text x="${cols[1]}" y="${ty + 15}" font-size="10.5" fill="#6b7280">Resolves: ${esc(r.scenario.name)} (blocked ${esc(r.scenario.blockedConnectionIds.join(" + "))})</text>`);
     out.push(`<text x="${cols[2]}" y="${ty}" font-size="12" fill="#16a34a" font-weight="700">ACCEPTED</text>`);
     out.push(`<text x="${cols[3]}" y="${ty}" font-size="12" fill="#111827">${c ? `${c.length.toFixed(1)} m` : "—"}</text>`);
     out.push(`<text x="${cols[4]}" y="${ty}" font-size="12" fill="#111827">£${r.repair.cost.toLocaleString("en-GB")}</text>`);
@@ -206,9 +242,17 @@ export function buildPlanSvg({ building, plan, result, repairs, budget, regressi
   ty += 22;
   out.push(`<text x="${cols[3]}" y="${ty}" font-size="12" font-weight="700" fill="#111827">Total</text><text x="${cols[4]}" y="${ty}" font-size="12" font-weight="800" fill="#111827">£${spent.toLocaleString("en-GB")} of £${budget.toLocaleString("en-GB")}</text>`);
   out.push(`<text x="${cols[0]}" y="${ty}" font-size="12" fill="#111827">${result.reachableCount}/${result.totalCount} occupants have a verified route${regressionsPassed ? ` · ${regressionsPassed.passed}/${regressionsPassed.total} regression scenarios pass` : ""}</text>`);
+  if (certificate) {
+    ty += 26;
+    out.push(`<rect x="${tableX}" y="${ty - 16}" width="${width - PAD * 2}" height="24" rx="4" fill="${certificate.faultFree ? "#ecfdf3" : "#fef3f2"}"/><text x="${tableX + 10}" y="${ty}" font-size="12" font-weight="700" fill="${certificate.faultFree ? "#067647" : "#b42318"}">${certificate.faultFree ? `CERTIFIED FAULT-FREE: no combination of up to ${certificate.tolerance} blocked connection(s) strands anyone (${certificate.checked} combinations checked).` : `NOT YET FAULT-FREE against ${certificate.tolerance} failure(s): weak combinations remain.`}</text>`);
+  }
 
+  // Analysis summary
+  ty += 26;
+  const costSrc = rates?.source === "gemini-search" ? `Costs modelled from live web sources via Gemini + Google Search (${rates.asOf}${rates.sources.length ? `, ${rates.sources.length} sources` : ""})` : "Costs modelled from built-in indicative rates (not a quotation)";
+  if (runs) out.push(`<text x="${tableX}" y="${ty}" font-size="11.5" fill="#374151">Analysis: ${runs.attacker} attacker run(s), ${runs.defender} defender proposal(s), ${runs.judge} judge verdict(s), ${runs.regressionChecks} regression re-checks, ${(scenariosEvaluated ?? 0).toLocaleString("en-GB")} stress-test scenarios. ${costSrc}.</text>`);
   // Legend + disclaimer
-  ty += 34;
+  ty += 30;
   const lg = [
     ["#2563eb", "Proposed change (hatched)"],
     ["#16a34a", "Escape route (engine-verified)"],

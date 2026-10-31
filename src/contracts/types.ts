@@ -20,6 +20,10 @@ export type Connection = {
   stepFree: boolean;
   floor: number;
   costToAdd?: number;
+  /** Optional, additive (v1.1): what the link physically is. Defaults to corridor/door, or stairs if not step-free between floors. */
+  kind?: "corridor" | "door" | "stairs" | "lift" | "ramp";
+  /** Optional, additive (v1.1): lift designed and powered for evacuation, so it keeps working in a fire alarm. */
+  evacuationLift?: boolean;
 };
 
 export type Occupant = {

@@ -44,7 +44,8 @@ export async function POST(req: Request) {
         const s = checkScenario((p as { scenario?: unknown })?.scenario, building);
         if (s.ok) prior.push({ scenario: s.value, result: simulate(building, s.value) });
       }
-      const proposal = await suggestAttack(building, prior);
+      const maxBlocked = body.maxBlocked === 1 ? 1 : 2;
+      const proposal = await suggestAttack(building, prior, maxBlocked);
       return NextResponse.json<Ok>({ success: true, data: proposal, source: "gemini" });
     }
 
@@ -61,7 +62,15 @@ export async function POST(req: Request) {
             reasons: Array.isArray((f as { reasons?: unknown })?.reasons) ? ((f as { reasons: unknown[] }).reasons.filter((x) => typeof x === "string").slice(0, 6) as string[]) : [],
           }))
         : [];
-      const proposal = await suggestRepair(building, s.value, result, budget, feedback);
+      const rawC = (body.constraints ?? {}) as { allowed?: unknown; rates?: unknown };
+      const constraints = {
+        allowed: Array.isArray(rawC.allowed) ? rawC.allowed.filter((x): x is string => typeof x === "string").slice(0, 6) : undefined,
+        rates:
+          rawC.rates && typeof rawC.rates === "object"
+            ? Object.fromEntries(Object.entries(rawC.rates as Record<string, unknown>).filter(([, v]) => typeof v === "number" && Number.isFinite(v)).slice(0, 12)) as Record<string, number>
+            : undefined,
+      };
+      const proposal = await suggestRepair(building, s.value, result, budget, feedback, constraints);
       return NextResponse.json<Ok>({ success: true, data: proposal, source: "gemini" });
     }
 

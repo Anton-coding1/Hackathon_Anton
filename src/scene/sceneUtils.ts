@@ -63,6 +63,12 @@ export function connectionPolyline(c: Connection, nodes: Map<string, RoomNode>, 
   const upperIsA = a.floor > b.floor;
   const U = upperIsA ? pa : pb;
   const L = upperIsA ? pb : pa;
+  if (c.kind === "lift" || c.kind === "ramp") {
+    // Lift: walk to the shaft (under the upper node), then straight up.
+    const foot = new THREE.Vector3(U.x, L.y, U.z);
+    const pts = dedupe([L, foot, U]);
+    return upperIsA ? pts.reverse() : pts;
+  }
   const alongX = Math.abs(L.x - U.x) >= Math.abs(L.z - U.z);
   const RUN = 6;
   let pts: THREE.Vector3[];

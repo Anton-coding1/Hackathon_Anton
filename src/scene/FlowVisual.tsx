@@ -2,8 +2,9 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
-import { Html } from "@react-three/drei";
+
 import * as THREE from "three";
+import { Html } from "./SceneHtml";
 import { COLORS, Polyline } from "./sceneUtils";
 
 export type FlowStream = {

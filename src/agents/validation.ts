@@ -65,12 +65,17 @@ export function validateRepairShape(raw: unknown, building: Building, scenario: 
     if (typeof c.stepFree !== "boolean") return { ok: false, error: "connection.stepFree must be true or false." };
     const from = building.nodes.find((n) => n.id === c.from)!;
     const to = building.nodes.find((n) => n.id === c.to)!;
-    const floor = typeof c.floor === "number" && Number.isInteger(c.floor) ? c.floor : Math.min(from.floor, to.floor);
+    const floor = Math.min(from.floor, to.floor);
+    const kinds = ["corridor", "door", "stairs", "lift", "ramp"] as const;
+    const ck = kinds.includes(c.kind as (typeof kinds)[number]) ? (c.kind as (typeof kinds)[number]) : c.stepFree ? "corridor" : "stairs";
     return {
       ok: true,
       value: {
         kind: "add_connection",
-        connection: { id, from: from.id, to: to.id, length: c.length, stepFree: c.stepFree, floor, costToAdd: cost },
+        connection: {
+          id, from: from.id, to: to.id, length: c.length, stepFree: ck === "stairs" ? false : c.stepFree, floor, costToAdd: cost, kind: ck,
+          ...(ck === "lift" ? { evacuationLift: c.evacuationLift === true } : {}),
+        },
         cost,
       },
     };

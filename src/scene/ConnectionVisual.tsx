@@ -2,8 +2,9 @@
 
 import { useMemo, useRef } from "react";
 import { useFrame, type ThreeEvent } from "@react-three/fiber";
-import { Html, Line } from "@react-three/drei";
+import { Line } from "@react-three/drei";
 import * as THREE from "three";
+import { Html } from "./SceneHtml";
 import type { Connection } from "@/contracts/types";
 import { COLORS, Polyline, stateColor, type ConnectionState } from "./sceneUtils";
 
@@ -92,8 +93,9 @@ export function ConnectionVisual({ connection, points, state, isNew, showLabel, 
     <group>
       {segs.map((s, i) => (
         <group key={i}>
-          {s.sloped && <StairFlight a={s.a} b={s.b} />}
-          <mesh position={[s.mid.x, s.mid.y + (s.sloped ? 0.22 : LIFT), s.mid.z]} quaternion={s.quat} receiveShadow>
+          {s.sloped && connection.kind !== "lift" && <StairFlight a={s.a} b={s.b} />}
+          {s.sloped && connection.kind === "lift" && <LiftShaft a={s.a} b={s.b} state={state} evac={!!connection.evacuationLift} />}
+          <mesh visible={!(s.sloped && connection.kind === "lift")} position={[s.mid.x, s.mid.y + (s.sloped ? 0.22 : LIFT), s.mid.z]} quaternion={s.quat} receiveShadow>
             <boxGeometry args={[s.len + (s.sloped ? 0 : 0.3), 0.03, width]} />
             <meshStandardMaterial ref={reg} color={COLORS.lane} transparent opacity={0.55} roughness={0.6} depthWrite={false} />
           </mesh>
@@ -124,7 +126,15 @@ export function ConnectionVisual({ connection, points, state, isNew, showLabel, 
             title={`${connection.id}: ${connection.from} ↔ ${connection.to}, ${connection.length} m, ${connection.stepFree ? "step-free" : "stairs"}. Click to ${state === "blocked" ? "reopen" : "block"}.`}
           >
             <b>{connection.id}</b>
-            {state === "blocked" ? <span>blocked</span> : !connection.stepFree ? <span>stairs</span> : isNew ? <span>new</span> : null}
+            {connection.kind === "lift" ? (
+              <span>{state === "blocked" ? "lift recalled" : connection.evacuationLift ? "evac lift" : "lift"}</span>
+            ) : state === "blocked" ? (
+              <span>blocked</span>
+            ) : !connection.stepFree ? (
+              <span>stairs</span>
+            ) : isNew ? (
+              <span>new</span>
+            ) : null}
           </button>
         </Html>
       )}
@@ -177,6 +187,48 @@ function StairFlight({ a, b }: { a: THREE.Vector3; b: THREE.Vector3 }) {
           <meshStandardMaterial color="#8b95a3" roughness={0.4} metalness={0.5} />
         </mesh>
       ))}
+    </group>
+  );
+}
+
+/** Glass lift shaft with a car that runs while the lift is in use. */
+function LiftShaft({ a, b, state, evac }: { a: THREE.Vector3; b: THREE.Vector3; state: ConnectionState; evac: boolean }) {
+  const lo = a.y < b.y ? a : b;
+  const hi = a.y < b.y ? b : a;
+  const h = hi.y - lo.y + 2.2;
+  const car = useRef<THREE.Mesh>(null);
+  const carMat = useRef<THREE.MeshStandardMaterial>(null);
+  useFrame(({ clock }) => {
+    if (!car.current || !carMat.current) return;
+    const t = clock.elapsedTime;
+    const moving = state === "route";
+    const y = moving ? lo.y + 1.1 + ((Math.sin(t * 0.8) + 1) / 2) * (hi.y - lo.y) : lo.y + 1.1;
+    car.current.position.y += (y - car.current.position.y) * 0.1;
+    carMat.current.color.set(state === "blocked" ? COLORS.blocked : evac ? COLORS.exit : "#d0d5dd");
+  });
+  const frame = state === "blocked" ? COLORS.blocked : evac ? COLORS.exit : "#98a2b3";
+  const w = 1.7;
+  return (
+    <group position={[hi.x, 0, hi.z]}>
+      <mesh position={[0, lo.y + h / 2 - 0.1, 0]}>
+        <boxGeometry args={[w, h, w]} />
+        <meshPhysicalMaterial color="#cfe0ee" transparent opacity={0.28} roughness={0.05} depthWrite={false} />
+      </mesh>
+      {[
+        [-w / 2, -w / 2],
+        [w / 2, -w / 2],
+        [-w / 2, w / 2],
+        [w / 2, w / 2],
+      ].map(([x, z], i) => (
+        <mesh key={i} position={[x, lo.y + h / 2 - 0.1, z]} castShadow>
+          <boxGeometry args={[0.08, h, 0.08]} />
+          <meshStandardMaterial color={frame} metalness={0.4} roughness={0.4} />
+        </mesh>
+      ))}
+      <mesh ref={car} position={[0, lo.y + 1.1, 0]} castShadow>
+        <boxGeometry args={[w - 0.25, 2, w - 0.25]} />
+        <meshStandardMaterial ref={carMat} color="#d0d5dd" metalness={0.5} roughness={0.35} />
+      </mesh>
     </group>
   );
 }

@@ -7,7 +7,8 @@ import { EffectComposer, N8AO, SMAA } from "@react-three/postprocessing";
 import * as THREE from "three";
 import type { OrbitControls as OrbitControlsImpl } from "three-stdlib";
 import type { Building, Connection, Scenario, TestResult } from "@/contracts/types";
-import type { BuildingPlan, FloorPlan } from "@/data/demoPlan";
+import type { BuildingPlan } from "@/data/demoPlan";
+import { autoPlan } from "@/data/autoPlan";
 import { ConnectionVisual, ProposalVisual } from "./ConnectionVisual";
 import { FlowVisual, type FlowStream } from "./FlowVisual";
 import { PlanGeometry } from "./PlanGeometry";
@@ -39,6 +40,8 @@ export type BuildingSceneProps = {
   exploded?: boolean;
   showLabels?: boolean;
   cameraResetKey?: number;
+  /** Share of the canvas width actually visible (e.g. 0.6 when side panels overlap it), and a target nudge. */
+  framing?: { visibleFraction: number; offset: [number, number, number] };
 };
 
 export function BuildingScene(props: BuildingSceneProps): React.ReactElement {
@@ -79,6 +82,7 @@ function SceneContents({
   exploded = true,
   showLabels = true,
   cameraResetKey = 0,
+  framing,
 }: BuildingSceneProps) {
   const [hovered, setHovered] = useState<string | null>(null);
   const plan = useMemo(() => planProp ?? autoPlan(building), [planProp, building]);
@@ -92,7 +96,30 @@ function SceneContents({
     [building, stranded],
   );
   const centre = useMemo(() => buildingCentre(building, plan), [building, plan]);
-  const polylines = useMemo(() => new Map(building.connections.map((c) => [c.id, connectionPolyline(c, nodes, exploded)])), [building, nodes, exploded]);
+  const span = useMemo(() => {
+    const xs = plan.floors.flatMap((f) => [f.footprint[0], f.footprint[2]]);
+    const zs = plan.floors.flatMap((f) => [f.footprint[1], f.footprint[3]]);
+    return Math.max(Math.max(...xs) - Math.min(...xs), (Math.max(...zs) - Math.min(...zs)) * 1.6, 12);
+  }, [plan]);
+  const polylines = useMemo(() => {
+    // Parallel links between the same two spaces are drawn side by side, not on top of each other.
+    const seen = new Map<string, number>();
+    return new Map(
+      building.connections.map((c) => {
+        const key = [c.from, c.to].sort().join("|");
+        const k = seen.get(key) ?? 0;
+        seen.set(key, k + 1);
+        const pts = connectionPolyline(c, nodes, exploded);
+        if (k === 0 || pts.length < 2) return [c.id, pts];
+        const a = pts[0];
+        const b = pts[pts.length - 1];
+        const n = new THREE.Vector3(-(b.z - a.z), 0, b.x - a.x);
+        if (n.lengthSq() < 1e-6) n.set(1, 0, 0);
+        n.normalize().multiplyScalar(0.9 * (k % 2 ? 1 : -1) * Math.ceil(k / 2));
+        return [c.id, pts.map((p) => p.clone().add(n))];
+      }),
+    );
+  }, [building, nodes, exploded]);
 
   const streams: FlowStream[] = useMemo(() => {
     return building.occupants.map((o) => {
@@ -115,7 +142,7 @@ function SceneContents({
 
   return (
     <>
-      <CameraRig centre={centre} resetKey={cameraResetKey} exploded={exploded} />
+      <CameraRig centre={centre} resetKey={cameraResetKey} exploded={exploded} span={span} framing={framing} />
       <hemisphereLight args={["#ffffff", "#c9d2de", 0.9]} />
       <ambientLight intensity={0.25} />
       <directionalLight
@@ -205,17 +232,32 @@ function Site({ centre, plan }: { centre: THREE.Vector3; plan: BuildingPlan }) {
 }
 
 /** Fly-in on load and smooth return to the default axonometric view when resetKey changes. */
-function CameraRig({ centre, resetKey, exploded }: { centre: THREE.Vector3; resetKey: number; exploded: boolean }) {
+function CameraRig({
+  centre,
+  resetKey,
+  exploded,
+  span,
+  framing,
+}: {
+  centre: THREE.Vector3;
+  resetKey: number;
+  exploded: boolean;
+  span: number;
+  framing?: { visibleFraction: number; offset: [number, number, number] };
+}) {
   const controls = useRef<OrbitControlsImpl>(null);
   const { camera, size } = useThree();
   const flying = useRef(true);
+  const fraction = framing?.visibleFraction ?? 1;
+  const aspect = (size.width * fraction) / Math.max(1, size.height);
+  const dist = (span * 1.0 * (aspect < 1.6 ? 1.6 / aspect : 1)) / Math.max(0.4, fraction) + (exploded ? 6 : 0);
+  const off = framing?.offset ?? [0, 0, 0];
+  const goalPos = useMemo(() => {
+    const dir = new THREE.Vector3(0.53, exploded ? 0.6 : 0.52, 0.62).normalize();
+    return new THREE.Vector3(centre.x + off[0], 0, centre.z + off[2]).addScaledVector(dir, dist);
+  }, [centre, dist, exploded, off[0], off[2]]);
+  const goalTarget = useMemo(() => new THREE.Vector3(centre.x + off[0], (exploded ? 2.5 : 1) + off[1], centre.z + off[2]), [centre, exploded, off[0], off[1], off[2]]);
   const narrow = size.width < 900;
-  const dist = narrow ? 1.5 : 1;
-  const goalPos = useMemo(
-    () => new THREE.Vector3(centre.x + 40 * dist, (exploded ? 44 : 35) * dist, centre.z + 49 * dist),
-    [centre, dist, exploded],
-  );
-  const goalTarget = useMemo(() => new THREE.Vector3(centre.x + 2.5, exploded ? 0.5 : -1, centre.z + 3.5), [centre, exploded]);
 
   useEffect(() => {
     flying.current = true;
@@ -265,31 +307,6 @@ function ScanSweep({ activity, centre, exploded }: { activity: Activity; centre:
       <meshBasicMaterial ref={mat} color={color} transparent opacity={0} side={THREE.DoubleSide} depthWrite={false} />
     </mesh>
   );
-}
-
-/** Minimal plan for buildings that ship without one: a slab per floor and a pad per node. */
-function autoPlan(b: Building): BuildingPlan {
-  const floors = [...new Set(b.nodes.map((n) => n.floor))].sort((x, y) => x - y);
-  const plans: FloorPlan[] = floors.map((f) => {
-    const ns = b.nodes.filter((n) => n.floor === f);
-    const xs = ns.map((n) => n.position[0]);
-    const zs = ns.map((n) => n.position[2]);
-    return {
-      floor: f,
-      name: f === 0 ? "Ground floor" : `Level ${f}`,
-      footprint: [Math.min(...xs) - 3, Math.min(...zs) - 3, Math.max(...xs) + 3, Math.max(...zs) + 3],
-      voids: [],
-      openings: [],
-      spaces: ns.map((n) => ({
-        id: `auto-${n.id}`,
-        name: n.label,
-        nodeId: n.id,
-        kind: n.kind === "room" ? ("room" as const) : n.kind === "exit" ? ("lobby" as const) : ("circulation" as const),
-        rect: [n.position[0] - 1.6, n.position[2] - 1.6, n.position[0] + 1.6, n.position[2] + 1.6] as [number, number, number, number],
-      })),
-    };
-  });
-  return { floors: plans, exitDoors: {}, wallHeight: 0.4 };
 }
 
 export default BuildingScene;

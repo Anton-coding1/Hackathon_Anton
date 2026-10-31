@@ -18,8 +18,9 @@ export async function suggestRepair(
   result: TestResult,
   budget: number,
   feedback: AuditFeedback[] = [],
+  constraints?: { allowed?: string[]; rates?: Record<string, number> },
 ): Promise<RepairProposal> {
-  const base = defenderPrompt(building, scenario, result, budget, feedback);
+  const base = defenderPrompt(building, scenario, result, budget, feedback, constraints);
   let prompt = base;
   let lastError = "";
   for (let attempt = 1; attempt <= 2; attempt++) {

@@ -1,7 +1,7 @@
 "use client";
 
 import type { StressStats } from "./useStressTest";
-import type { DemoController } from "./useDemoController";
+import type { Constraints, DemoController, RepairKind } from "./useDemoController";
 
 const fmt = (n: number) => n.toLocaleString("en-GB");
 
@@ -14,6 +14,8 @@ export function ControlPanel({
   setExploded,
   labels,
   setLabels,
+  constraints,
+  setConstraints,
 }: {
   c: DemoController;
   stress: StressStats;
@@ -23,7 +25,10 @@ export function ControlPanel({
   setExploded: (v: boolean) => void;
   labels: boolean;
   setLabels: (v: boolean) => void;
+  constraints: Constraints;
+  setConstraints: (c: Constraints) => void;
 }) {
+  const hasLifts = c.building.connections.some((x) => x.kind === "lift");
   const canRedesign = !c.busy && c.result.unreachableOccupantIds.length > 0 && c.phase !== "accepted";
   const canVerify = !c.busy && !!c.proposal && c.phase === "proposed";
   const failPct = stress.evaluated ? (100 * stress.failing) / stress.evaluated : 0;
@@ -96,6 +101,59 @@ export function ControlPanel({
       </section>
 
       <section>
+        <h3>Design constraints</h3>
+        <label className="field">
+          <span>
+            Budget <b>£{constraints.budget.toLocaleString("en-GB")}</b>
+          </span>
+          <input
+            type="range"
+            min={5000}
+            max={300000}
+            step={5000}
+            value={constraints.budget}
+            disabled={c.busy}
+            onChange={(e) => setConstraints({ ...constraints, budget: Number(e.target.value) })}
+          />
+        </label>
+        <div className="field" style={{ marginTop: 10 }}>
+          <span>Resilience target</span>
+          <div className="seg">
+            {([1, 2] as const).map((t) => (
+              <button key={t} className={constraints.tolerance === t ? "on" : ""} disabled={c.busy} onClick={() => setConstraints({ ...constraints, tolerance: t })}>
+                Any {t} failure{t > 1 ? "s" : ""}
+              </button>
+            ))}
+          </div>
+        </div>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={constraints.liftsRecalled}
+            disabled={c.busy}
+            onChange={(e) => setConstraints({ ...constraints, liftsRecalled: e.target.checked })}
+          />
+          <span>
+            Assume lifts are recalled in an emergency
+            <small>{hasLifts ? "Non-evacuation lifts become unusable in every scenario" : "No lifts in this building"}</small>
+          </span>
+        </label>
+        <div className="chips">
+          {(["corridor", "stairs", "lift", "ramp", "unblock"] as RepairKind[]).map((k) => (
+            <button
+              key={k}
+              className={constraints.allow[k] ? "on" : ""}
+              disabled={c.busy}
+              onClick={() => setConstraints({ ...constraints, allow: { ...constraints.allow, [k]: !constraints.allow[k] } })}
+            >
+              {k === "unblock" ? "reopen" : k}
+            </button>
+          ))}
+        </div>
+        <p className="hint">Repair types the defender may propose. The judge rejects anything outside them.</p>
+      </section>
+
+      <section>
         <h3>Step through</h3>
         <div className="step-grid">
           <button className="btn btn-sm" disabled={c.busy} onClick={() => c.attack()}>
@@ -111,9 +169,11 @@ export function ControlPanel({
             Reset
           </button>
         </div>
-        <button className="btn btn-sm btn-quiet" disabled={c.busy} onClick={() => c.runSignatureDemo()}>
-          Scripted demo · guaranteed rejection
-        </button>
+        {c.preset.scripted && (
+          <button className="btn btn-sm btn-quiet" disabled={c.busy} onClick={() => c.runSignatureDemo()}>
+            Scripted demo · guaranteed rejection
+          </button>
+        )}
       </section>
 
       <section>

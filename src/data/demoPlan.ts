@@ -36,6 +36,8 @@ export type FloorPlan = {
   openings: Opening[];
   /** Rectangles cut out of this floor's slab (stair voids). */
   voids: Rect[];
+  /** Optional furniture / racking blocks: [x0, z0, x1, z1, height]. Visual only. */
+  fixtures?: [number, number, number, number, number][];
 };
 
 export type BuildingPlan = {

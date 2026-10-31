@@ -1,113 +1,126 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Building, Connection, FailurePassport, Repair, RepairAudit, Scenario, TestResult } from "@/contracts/types";
-import {
-  blockedD4Scenario,
-  DEMO_BUDGET,
-  demoBuilding,
-  initialScenario,
-  invalidDemoRepair,
-  validDemoRepair,
-} from "@/data/demoBuilding";
-import { auditRepair, resilienceFingerprint, simulate, withConnection } from "@/engine";
-import { fallbackAttack, fallbackRepair } from "./fallbackAgents";
+import type { Building, FailurePassport, Repair, RepairAudit, Scenario, TestResult } from "@/contracts/types";
+import type { BuildingPreset } from "@/data/buildings";
+import { auditRepair, certify, simulate, withConnection, type Certificate } from "@/engine";
+import { DEFAULT_RATES, withModelledCost, type CostEstimate, type CostRates } from "@/cost/costModel";
+import { fallbackAttack, fallbackRepair, repairKind } from "./fallbackAgents";
 
 export type Source = "gemini" | "fallback" | "judge" | "scripted";
 export type Phase = "idle" | "attacking" | "attacked" | "defending" | "proposed" | "auditing" | "accepted" | "rejected";
 export type LogEntry = { id: number; at: number; role: "attacker" | "defender" | "judge" | "manual" | "system"; text: string; tone?: "bad" | "good" | "warn" | "ai" };
 export type PassportMeta = { createdAt: number; source: Source; attempts: number };
 export type GeminiStatus = { checked: boolean; configured: boolean; model: string };
+export type RepairKind = "corridor" | "stairs" | "lift" | "ramp" | "unblock";
+export type Constraints = { budget: number; liftsRecalled: boolean; tolerance: 1 | 2; allow: Record<RepairKind, boolean> };
+export type Fix = { scenario: Scenario; stranded: string[]; repair: Repair; source: Source; attempts: number; rejected: number };
+export type Report = { status: "fault-free" | "stuck" | "stopped"; certificate: Certificate; fixes: Fix[]; totalCost: number; remaining?: Scenario; at: number };
+export type Proposal = { repair: Repair; reasoning: string; source: Source; attempt: number; aiCost?: number; estimate: CostEstimate } | null;
+export type AgentRuns = { attacker: number; defender: number; judge: number; geminiCalls: number; fallbackCalls: number; regressionChecks: number };
 
-type Proposal = { repair: Repair; reasoning: string; source: Source; attempt: number } | null;
 type AttackInfo = { reasoning: string; source: Source } | null;
+type Feedback = { repair: Repair; reasons: string[] };
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const BASELINE: Scenario = { id: "BASELINE", name: "Normal operation", blockedConnectionIds: [] };
+const ZERO_RUNS: AgentRuns = { attacker: 0, defender: 0, judge: 0, geminiCalls: 0, fallbackCalls: 0, regressionChecks: 0 };
 
-export function useDemoController() {
-  const [building, setBuilding] = useState<Building>(demoBuilding);
-  const [scenario, setScenario] = useState<Scenario>(initialScenario);
+export function defaultConstraints(preset: BuildingPreset): Constraints {
+  return { budget: preset.defaultBudget, liftsRecalled: false, tolerance: preset.defaultTolerance, allow: { corridor: true, stairs: true, lift: true, ramp: true, unblock: true } };
+}
+
+/** Non-evacuation lifts, which are recalled when lifts are assumed unusable in an emergency. */
+function recalledLifts(b: Building): string[] {
+  return b.connections.filter((c) => c.kind === "lift" && !c.evacuationLift).map((c) => c.id);
+}
+
+export function useDemoController(preset: BuildingPreset, constraints: Constraints) {
+  const [building, setBuilding] = useState<Building>(preset.building);
+  const [rawScenario, setRawScenario] = useState<Scenario>(BASELINE);
   const [addedIds, setAddedIds] = useState<string[]>([]);
   const [phase, setPhase] = useState<Phase>("idle");
   const [attackInfo, setAttackInfo] = useState<AttackInfo>(null);
   const [proposal, setProposal] = useState<Proposal>(null);
   const [audit, setAudit] = useState<RepairAudit | null>(null);
-  const [feedback, setFeedback] = useState<{ repair: Repair; reasons: string[] }[]>([]);
+  const [feedback, setFeedback] = useState<Feedback[]>([]);
   const [passports, setPassports] = useState<FailurePassport[]>([]);
   const [passportMeta, setPassportMeta] = useState<Record<string, PassportMeta>>({});
   const [regressions, setRegressions] = useState<Scenario[]>([]);
   const [tested, setTested] = useState<Scenario[]>([]);
   const [spent, setSpent] = useState(0);
   const [log, setLog] = useState<LogEntry[]>([]);
-  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [gemini, setGemini] = useState<GeminiStatus>({ checked: false, configured: false, model: "" });
+  const [rates, setRates] = useState<CostRates>(DEFAULT_RATES);
+  const [ratesNote, setRatesNote] = useState<string>("");
+  const [ratesLoading, setRatesLoading] = useState(false);
   const [verdictFlash, setVerdictFlash] = useState<{ key: number; accepted: boolean; text: string } | null>(null);
   const [cameraResetKey, setCameraResetKey] = useState(0);
+  const [runs, setRuns] = useState<AgentRuns>(ZERO_RUNS);
+  const [autopilot, setAutopilot] = useState(false);
+  const [fixes, setFixes] = useState<Fix[]>([]);
+  const [report, setReport] = useState<Report | null>(null);
   const logId = useRef(0);
   const runToken = useRef(0);
 
+  /** Applies the emergency-lift assumption on top of any scenario. */
+  const effective = useCallback(
+    (s: Scenario, b: Building = building): Scenario => {
+      if (!constraints.liftsRecalled) return s;
+      const lifts = recalledLifts(b).filter((id) => !s.blockedConnectionIds.includes(id));
+      if (!lifts.length) return s;
+      return { id: `${s.id}+LIFTS_RECALLED`, name: `${s.name} · lifts recalled`, blockedConnectionIds: [...s.blockedConnectionIds, ...lifts].sort() };
+    },
+    [building, constraints.liftsRecalled],
+  );
+
+  const scenario = useMemo(() => effective(rawScenario), [effective, rawScenario]);
   // The ONLY source of displayed results: the deterministic engine.
   const result: TestResult = useMemo(() => simulate(building, scenario), [building, scenario]);
-  const budgetLeft = DEMO_BUDGET - spent;
+  const budgetLeft = constraints.budget - spent;
+  // Live exhaustive check of every combination of up to `tolerance` failures.
+  const certificate: Certificate = useMemo(
+    () => certify(building, constraints.tolerance, constraints.liftsRecalled ? recalledLifts(building) : []),
+    [building, constraints.tolerance, constraints.liftsRecalled],
+  );
 
-  const fragility = useMemo(() => {
-    const fp = resilienceFingerprint(building);
-    const map: Record<string, number> = {};
-    for (const f of fp) {
-      const needsSF = building.occupants.some((o) => o.startNodeId === f.nodeId && o.requiresStepFree);
-      map[f.nodeId] = needsSF ? f.stepFree : f.anyRoute;
-    }
-    return map;
-  }, [building]);
+  // Everything async reads the latest state from here, so manual steps and loops share one implementation.
+  const S = useRef({ building, scenario, regressions, budgetLeft, gemini, rates, tested, constraints, feedback, proposal, fixes, spent });
+  S.current = { building, scenario, regressions, budgetLeft, gemini, rates, tested, constraints, feedback, proposal, fixes, spent };
 
   const say = useCallback((role: LogEntry["role"], text: string, tone?: LogEntry["tone"]) => {
-    setLog((l) => [...l.slice(-60), { id: ++logId.current, at: Date.now(), role, text, tone }]);
+    setLog((l) => [...l.slice(-80), { id: ++logId.current, at: Date.now(), role, text, tone }]);
   }, []);
+  const bump = (k: keyof AgentRuns, n = 1) => setRuns((r) => ({ ...r, [k]: r[k] + n }));
 
   useEffect(() => {
     fetch("/api/agents")
       .then((r) => r.json())
       .then((j) => setGemini({ checked: true, configured: Boolean(j?.data?.configured), model: j?.data?.model ?? "" }))
       .catch(() => setGemini({ checked: true, configured: false, model: "" }));
-    say("system", "Blackwood Hall loaded. Every result shown is computed by the deterministic graph engine.");
-  }, [say]);
+    say("system", `${preset.title} loaded. Every result shown is computed by the deterministic graph engine.`);
+  }, [say, preset.title]);
 
-  /** Records a scenario that strands someone as a Failure Passport and a regression test. */
-  const recordFailure = useCallback(
-    (s: Scenario, r: TestResult, source: Source) => {
-      if (r.unreachableOccupantIds.length === 0) return;
-      setRegressions((prev) => (prev.some((p) => p.id === s.id) ? prev : [...prev, s]));
-      setPassports((prev) => {
-        if (prev.some((p) => p.scenario.id === s.id && !p.audit?.accepted)) return prev;
-        const id = `FP-${String(prev.length + 1).padStart(3, "0")}`;
-        setPassportMeta((m) => ({ ...m, [id]: { createdAt: Date.now(), source, attempts: 0 } }));
-        return [...prev, { id, scenario: s, result: r }];
-      });
-    },
-    [],
-  );
-
-  const applyScenario = useCallback(
-    (s: Scenario, source: Source, reasoning: string, b: Building = building) => {
-      const r = simulate(b, s);
-      setScenario(s);
-      setAttackInfo({ reasoning, source });
-      setProposal(null);
-      setAudit(null);
-      setFeedback([]);
-      setTested((t) => (t.some((x) => x.id === s.id) ? t : [...t, s]));
-      recordFailure(s, r, source);
-      const who = source === "judge" ? "manual" : "attacker";
-      if (r.unreachableOccupantIds.length) {
-        say(who, `${s.name}: ${r.unreachableOccupantIds.join(", ")} stranded (${r.reachableCount}/${r.totalCount} reachable).`, "bad");
-      } else {
-        say(who, `${s.name}: everyone still has a route (${r.reachableCount}/${r.totalCount}).`, "good");
+  const loadRates = useCallback(
+    async (refresh = false) => {
+      setRatesLoading(true);
+      try {
+        const j = await fetch(`/api/cost${refresh ? "?refresh=1" : ""}`).then((r) => r.json());
+        if (j?.data) setRates(j.data);
+        setRatesNote(j?.note ?? "");
+        if (j?.data?.source === "gemini-search") say("system", `Cost model updated from live web sources via Gemini + Google Search (${j.data.sources?.length ?? 0} sources).`, "good");
+      } catch {
+        setRatesNote("Could not reach the cost service; using built-in indicative rates.");
+      } finally {
+        setRatesLoading(false);
       }
-      return r;
     },
-    [building, recordFailure, say],
+    [say],
   );
+  useEffect(() => {
+    loadRates();
+  }, [loadRates]);
 
   const callAgents = async (body: Record<string, unknown>) => {
     const res = await fetch("/api/agents", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -116,71 +129,106 @@ export function useDemoController() {
     return json.data;
   };
 
-  /** Attacker: Gemini first, clearly-labelled deterministic search if Gemini is unavailable. */
+  const recordFailure = useCallback((s: Scenario, r: TestResult, source: Source) => {
+    if (r.unreachableOccupantIds.length === 0) return;
+    setRegressions((prev) => (prev.some((p) => p.id === s.id) ? prev : [...prev, s]));
+    setPassports((prev) => {
+      if (prev.some((p) => p.scenario.id === s.id && !p.audit?.accepted)) return prev;
+      const id = `FP-${String(prev.length + 1).padStart(3, "0")}`;
+      setPassportMeta((m) => ({ ...m, [id]: { createdAt: Date.now(), source, attempts: 0 } }));
+      return [...prev, { id, scenario: s, result: r }];
+    });
+  }, []);
+
+  /** Sets the active disruption (raw, before the lift assumption) and records any failure. */
+  const applyScenario = useCallback(
+    (raw: Scenario, source: Source, reasoning: string) => {
+      const b = S.current.building;
+      const s = effective(raw, b);
+      const r = simulate(b, s);
+      setRawScenario(raw);
+      setAttackInfo({ reasoning, source });
+      setProposal(null);
+      setAudit(null);
+      setFeedback([]);
+      setTested((t) => (t.some((x) => x.id === raw.id) ? t : [...t, raw]));
+      recordFailure(s, r, source);
+      say(source === "judge" ? "manual" : "attacker", r.unreachableOccupantIds.length ? `${s.name}: ${r.unreachableOccupantIds.join(", ")} stranded (${r.reachableCount}/${r.totalCount} reachable).` : `${s.name}: everyone still has a route (${r.reachableCount}/${r.totalCount}).`, r.unreachableOccupantIds.length ? "bad" : "good");
+      return { scenario: s, result: r };
+    },
+    [effective, recordFailure, say],
+  );
+
+  /* ---------------- attacker ---------------- */
   const attack = useCallback(async (): Promise<{ scenario: Scenario; result: TestResult } | null> => {
+    const { building: b, gemini: g, tested: t, constraints: con } = S.current;
     setBusy(true);
-    setError(null);
     setPhase("attacking");
-    say("attacker", gemini.configured ? `Gemini (${gemini.model}) is searching for a weakness…` : "Searching for a weakness…", "ai");
+    bump("attacker");
+    say("attacker", g.configured ? `Gemini (${g.model}) is searching for a weakness…` : "Searching for a weakness…", "ai");
     try {
-      let s: Scenario;
-      let reasoning: string;
-      let source: Source;
+      let raw: Scenario;
+      let reasoning = "";
+      let source: Source = "gemini";
       try {
-        if (!gemini.configured) throw new Error("Gemini is not configured (no GEMINI_API_KEY).");
-        const prior = tested.map((t) => ({ scenario: t }));
-        const data = await callAgents({ action: "attack", building, prior });
-        s = data.scenario;
+        if (!g.configured) throw new Error("not configured");
+        bump("geminiCalls");
+        const data = await callAgents({ action: "attack", building: b, prior: t.map((x) => ({ scenario: x })), maxBlocked: con.tolerance });
+        raw = data.scenario;
         reasoning = data.reasoning || "";
-        source = "gemini";
-        await wait(400);
+        await wait(300);
       } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (gemini.configured) say("system", `Gemini attack failed (${msg}). Using deterministic search instead.`, "warn");
-        await wait(900);
-        const fb = fallbackAttack(building, tested);
+        if (g.configured) say("system", `Gemini attack failed (${e instanceof Error ? e.message : e}). Using deterministic search.`, "warn");
+        bump("fallbackCalls");
+        await wait(800);
+        const fb = fallbackAttack(b, t, con.tolerance);
         if (!fb) {
           say("attacker", "No untested disruptions left.", "warn");
           setPhase("idle");
           return null;
         }
-        ({ scenario: s, reasoning } = fb);
+        ({ scenario: raw, reasoning } = fb);
         source = "fallback";
       }
-      const r = applyScenario(s, source, reasoning);
+      const out = applyScenario(raw, source, reasoning);
       setPhase("attacked");
-      return { scenario: s, result: r };
+      return out;
     } finally {
       setBusy(false);
     }
-  }, [applyScenario, building, gemini, say, tested]);
+  }, [applyScenario, say]);
 
-  /** Defender: proposes a repair for the current failure. Never applied without the auditor. */
-  const redesign = useCallback(
-    async (fb = feedback): Promise<Proposal> => {
-      if (result.unreachableOccupantIds.length === 0) {
+  /* ---------------- defender ---------------- */
+  const defendFor = useCallback(
+    async (s: Scenario, fb: Feedback[]): Promise<Proposal> => {
+      const { building: b, gemini: g, budgetLeft: left, regressions: regs, rates: rt, constraints: con } = S.current;
+      const r = simulate(b, s);
+      if (r.unreachableOccupantIds.length === 0) {
         say("defender", "Nothing to repair: everyone has a route in this scenario.", "warn");
         return null;
       }
       setBusy(true);
-      setError(null);
       setPhase("defending");
       setAudit(null);
-      say("defender", gemini.configured ? `Gemini is designing a repair (budget £${budgetLeft.toLocaleString("en-GB")})…` : "Designing a repair…", "ai");
+      bump("defender");
+      say("defender", `${g.configured ? "Gemini is designing" : "Designing"} repair attempt ${fb.length + 1} (budget £${left.toLocaleString("en-GB")})…`, "ai");
       try {
-        let p: Proposal;
+        let p: Proposal = null;
         try {
-          if (!gemini.configured) throw new Error("Gemini is not configured (no GEMINI_API_KEY).");
-          const data = await callAgents({ action: "defend", building, scenario, result, budget: budgetLeft, feedback: fb });
-          p = { repair: data.repair, reasoning: data.reasoning || "", source: "gemini", attempt: fb.length + 1 };
+          if (!g.configured) throw new Error("not configured");
+          bump("geminiCalls");
+          const allowed = (Object.keys(con.allow) as RepairKind[]).filter((k) => con.allow[k]);
+          const data = await callAgents({ action: "defend", building: b, scenario: s, result: r, budget: left, feedback: fb, constraints: { allowed, rates: rt.rates } });
+          const priced = withModelledCost(data.repair, b, rt);
+          p = { repair: priced.repair, estimate: priced.estimate, aiCost: data.repair.cost, reasoning: data.reasoning || "", source: "gemini", attempt: fb.length + 1 };
           await wait(300);
         } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          if (gemini.configured) say("system", `Gemini repair failed (${msg}). Using deterministic repair search.`, "warn");
-          await wait(900);
-          const f = fallbackRepair(building, scenario, regressions, budgetLeft);
+          if (g.configured) say("system", `Gemini repair failed (${e instanceof Error ? e.message : e}). Using deterministic repair search.`, "warn");
+          bump("fallbackCalls");
+          await wait(800);
+          const f = fallbackRepair(b, s, [...regs, s], left, rt, con.allow);
           if (!f) {
-            say("defender", "No affordable repair found within the remaining budget.", "warn");
+            say("defender", "No repair within budget and design constraints passes the judge.", "warn");
             setPhase("attacked");
             return null;
           }
@@ -188,46 +236,67 @@ export function useDemoController() {
         }
         setProposal(p);
         setPhase("proposed");
-        say("defender", `Proposes ${describeRepair(p!.repair)} for £${p!.repair.cost.toLocaleString("en-GB")}.`, "ai");
+        say("defender", `Proposes ${describeRepair(p!.repair)} · modelled cost £${p!.repair.cost.toLocaleString("en-GB")}${p!.aiCost && p!.aiCost !== p!.repair.cost ? ` (AI estimated £${p!.aiCost.toLocaleString("en-GB")})` : ""}.`, "ai");
         return p;
       } finally {
         setBusy(false);
       }
     },
-    [budgetLeft, building, feedback, gemini, regressions, result, say, scenario],
+    [say],
   );
 
-  /** Auditor: independently verifies; only an accepted repair changes the building. */
-  const verify = useCallback(
-    async (p: Proposal = proposal): Promise<RepairAudit | null> => {
-      if (!p) return null;
+  /* ---------------- judge ---------------- */
+  const judgeFor = useCallback(
+    async (s: Scenario, p: NonNullable<Proposal>): Promise<RepairAudit> => {
+      const { building: b, regressions: regs, budgetLeft: left, constraints: con } = S.current;
       setBusy(true);
       setPhase("auditing");
-      say("judge", "Re-running the target scenario and every stored regression…", "ai");
-      await wait(1100); // let the audit sweep play; the computation itself is instant
-      const a = auditRepair(building, scenario, p.repair, regressions, budgetLeft);
+      bump("judge");
+      const regSet = regs.some((x) => x.id === s.id) ? regs : [...regs, s];
+      bump("regressionChecks", regSet.length);
+      say("judge", `Re-solving the target scenario and ${regSet.length} stored regression(s)…`, "ai");
+      await wait(1000);
+      let a = auditRepair(b, s, p.repair, regSet, left);
+      const kind = repairKind(p.repair);
+      const reopenDoor = p.repair.kind === "unblock_connection" && b.connections.find((c) => c.id === (p.repair as { connectionId: string }).connectionId)?.kind !== "lift";
+      if (autopilotRef.current && reopenDoor && a.accepted) {
+        a = { ...a, accepted: false, after: a.before, reasons: ["Rejected: reopening a blocked door clears today's obstruction but adds no resilience; the building must survive this failure, so a structural change is needed."] };
+      } else if (!con.allow[kind]) {
+        a = { ...a, accepted: false, after: a.before, reasons: [`Rejected: design constraints do not allow ${kind === "unblock" ? "unblocking as a fix" : `new ${kind}s`}.`, ...a.reasons.filter((x) => !x.startsWith("Accepted"))] };
+      }
       setAudit(a);
       setPassports((prev) => {
-        const idx = [...prev].reverse().findIndex((x) => x.scenario.id === scenario.id);
-        if (idx === -1) return prev;
-        const i = prev.length - 1 - idx;
+        const i = prev.map((x) => x.scenario.id).lastIndexOf(s.id);
+        if (i === -1) return prev;
         const copy = [...prev];
         copy[i] = { ...copy[i], repair: p.repair, audit: a };
         setPassportMeta((m) => ({ ...m, [copy[i].id]: { ...(m[copy[i].id] ?? { createdAt: Date.now(), source: p.source }), attempts: p.attempt } }));
         return copy;
       });
-      setVerdictFlash({ key: Date.now(), accepted: a.accepted, text: a.accepted ? "REPAIR VERIFIED" : "REPAIR REJECTED" });
+      setVerdictFlash({ key: Date.now(), accepted: a.accepted, text: a.accepted ? "Change verified" : "Change rejected" });
       if (a.accepted) {
         say("judge", a.reasons[0], "good");
         if (p.repair.kind === "add_connection") {
-          const nb = withConnection(building, p.repair.connection);
+          const nb = withConnection(b, p.repair.connection);
+          S.current.building = nb;
           setBuilding(nb);
-          setAddedIds((ids) => [...ids, (p.repair as { connection: Connection }).connection.id]);
+          setAddedIds((ids) => [...ids, (p.repair as Extract<Repair, { kind: "add_connection" }>).connection.id]);
         } else {
           const id = p.repair.connectionId;
-          setScenario((s) => ({ ...s, blockedConnectionIds: s.blockedConnectionIds.filter((x) => x !== id) }));
+          setRawScenario((x) => ({ ...x, blockedConnectionIds: x.blockedConnectionIds.filter((y) => y !== id) }));
+          if (b.connections.find((c) => c.id === id)?.kind === "lift") {
+            // A lift upgraded with secondary power becomes an evacuation lift for good.
+            const nb = { ...b, connections: b.connections.map((c) => (c.id === id ? { ...c, evacuationLift: true } : c)) };
+            S.current.building = nb;
+            setBuilding(nb);
+          }
         }
-        setSpent((s) => s + p.repair.cost);
+        setSpent((x) => x + p.repair.cost);
+        S.current.budgetLeft = left - p.repair.cost;
+        S.current.spent += p.repair.cost;
+        const fix: Fix = { scenario: s, stranded: a.before.unreachableOccupantIds, repair: p.repair, source: p.source, attempts: p.attempt, rejected: p.attempt - 1 };
+        S.current.fixes = [...S.current.fixes, fix];
+        setFixes((f) => [...f, fix]);
         setFeedback([]);
         setPhase("accepted");
       } else {
@@ -238,31 +307,30 @@ export function useDemoController() {
       setBusy(false);
       return a;
     },
-    [budgetLeft, building, proposal, regressions, say, scenario],
+    [say],
   );
 
-  /** Judge clicks a connection: toggle it blocked and rerun the engine immediately. */
+  /* manual buttons */
+  const redesign = useCallback(() => defendFor(S.current.scenario, S.current.feedback), [defendFor]);
+  const verify = useCallback(async () => (S.current.proposal ? judgeFor(S.current.scenario, S.current.proposal) : null), [judgeFor]);
+
   const toggleConnection = useCallback(
     (id: string) => {
       if (busy) return;
-      const blocked = scenario.blockedConnectionIds.includes(id)
-        ? scenario.blockedConnectionIds.filter((x) => x !== id)
-        : [...scenario.blockedConnectionIds, id].sort();
-      const s: Scenario = blocked.length
-        ? { id: `JUDGE_${blocked.join("_")}`, name: `Judge blocks ${blocked.join(" + ")}`, blockedConnectionIds: blocked }
-        : { ...initialScenario };
-      applyScenario(s, "judge", "Chosen by a human judge.");
+      const cur = rawScenario.blockedConnectionIds;
+      const blocked = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id].sort();
+      applyScenario(blocked.length ? { id: `MANUAL_${blocked.join("_")}`, name: `Manual: ${blocked.join(" + ")} blocked`, blockedConnectionIds: blocked } : BASELINE, "judge", "Chosen manually.");
       setPhase(blocked.length ? "attacked" : "idle");
     },
-    [applyScenario, busy, scenario],
+    [applyScenario, busy, rawScenario],
   );
 
   const reset = useCallback(() => {
     runToken.current++;
-    autopilotRef.current = false;
     setAutopilot(false);
-    setBuilding(demoBuilding);
-    setScenario(initialScenario);
+    setBuilding(preset.building);
+    S.current.building = preset.building;
+    setRawScenario(BASELINE);
     setAddedIds([]);
     setPhase("idle");
     setAttackInfo(null);
@@ -274,203 +342,143 @@ export function useDemoController() {
     setRegressions([]);
     setTested([]);
     setSpent(0);
-    setError(null);
+    S.current.budgetLeft = S.current.constraints.budget;
+    S.current.regressions = [];
+    S.current.tested = [];
     setBusy(false);
+    setRuns(ZERO_RUNS);
+    setFixes([]);
+    setReport(null);
+    S.current.fixes = [];
+    S.current.spent = 0;
     setCameraResetKey((k) => k + 1);
     say("system", "Reset to the original building.");
-  }, [say]);
+  }, [preset.building, say]);
 
-  /**
-   * Autonomous loop: attack → simulate → repair → audit → (revise with the
-   * auditor's reasons) → audit. Up to 3 defender attempts.
-   */
-  const runLoop = useCallback(async (): Promise<"hardened" | "repaired" | "stuck" | "cancelled"> => {
+  /** attack → repair → judge → revise with the judge's reasons → judge (max 3 attempts). */
+  const runLoop = useCallback(async (forced?: { scenario: Scenario; reason: string }): Promise<"hardened" | "repaired" | "stuck" | "cancelled"> => {
     const token = ++runToken.current;
-    const found = await attack();
+    let found: { scenario: Scenario; result: TestResult } | null;
+    if (forced) {
+      bump("attacker");
+      setPhase("attacking");
+      await wait(900);
+      found = applyScenario(forced.scenario, "fallback", forced.reason);
+      setPhase("attacked");
+    } else {
+      found = await attack();
+    }
     if (token !== runToken.current) return "cancelled";
     if (!found || found.result.unreachableOccupantIds.length === 0) return "hardened";
-    // State updates from attack() are async; compute against the scenario we just applied.
-    let fb: { repair: Repair; reasons: string[] }[] = [];
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (token !== runToken.current) return "cancelled";
+    let fb: Feedback[] = [];
+    for (let i = 0; i < 3; i++) {
       await wait(500);
-      const p = await redesignFor(found.scenario, fb);
+      if (token !== runToken.current) return "cancelled";
+      const p = await defendFor(found.scenario, fb);
       if (token !== runToken.current) return "cancelled";
       if (!p) return "stuck";
       await wait(700);
-      const a = await verifyFor(found.scenario, p);
+      const a = await judgeFor(found.scenario, p);
       if (a.accepted) return "repaired";
       fb = [...fb, { repair: p.repair, reasons: a.reasons }];
     }
     return "stuck";
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [attack]);
+  }, [applyScenario, attack, defendFor, judgeFor]);
 
-  // Helpers that take an explicit scenario so the loop does not depend on React's state timing.
-  const latest = useRef({ building, regressions, budgetLeft, gemini });
-  latest.current = { building, regressions, budgetLeft, gemini };
-
-  const redesignFor = async (s: Scenario, fb: { repair: Repair; reasons: string[] }[]): Promise<Proposal> => {
-    const { building: b, regressions: regs, budgetLeft: left, gemini: g } = latest.current;
-    const r = simulate(b, s);
-    setPhase("defending");
-    setAudit(null);
-    setBusy(true);
-    say("defender", g.configured ? `Gemini is designing repair attempt ${fb.length + 1}…` : `Designing repair attempt ${fb.length + 1}…`, "ai");
-    try {
-      try {
-        if (!g.configured) throw new Error("no key");
-        const data = await callAgents({ action: "defend", building: b, scenario: s, result: r, budget: left, feedback: fb });
-        const p: Proposal = { repair: data.repair, reasoning: data.reasoning || "", source: "gemini", attempt: fb.length + 1 };
-        setProposal(p);
-        setPhase("proposed");
-        say("defender", `Proposes ${describeRepair(p!.repair)} for £${p!.repair.cost.toLocaleString("en-GB")}.`, "ai");
-        return p;
-      } catch (e) {
-        if (g.configured) say("system", `Gemini repair failed (${e instanceof Error ? e.message : e}). Using deterministic repair search.`, "warn");
-        await wait(900);
-        const f = fallbackRepair(b, s, [...regs, s], left);
-        if (!f) {
-          say("defender", "No affordable repair found within the remaining budget.", "warn");
-          setPhase("attacked");
-          return null;
-        }
-        const p: Proposal = { ...f, source: "fallback", attempt: fb.length + 1 };
-        setProposal(p);
-        setPhase("proposed");
-        say("defender", `Proposes ${describeRepair(p!.repair)} for £${p!.repair.cost.toLocaleString("en-GB")}.`, "ai");
-        return p;
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const verifyFor = async (s: Scenario, p: NonNullable<Proposal>): Promise<RepairAudit> => {
-    const { building: b, regressions: regs, budgetLeft: left } = latest.current;
-    setBusy(true);
-    setPhase("auditing");
-    say("judge", "Re-running the target scenario and every stored regression…", "ai");
-    await wait(1100);
-    const regSet = regs.some((x) => x.id === s.id) ? regs : [...regs, s];
-    const a = auditRepair(b, s, p.repair, regSet, left);
-    setAudit(a);
-    setPassports((prev) => {
-      const i = prev.map((x) => x.scenario.id).lastIndexOf(s.id);
-      if (i === -1) return prev;
-      const copy = [...prev];
-      copy[i] = { ...copy[i], repair: p.repair, audit: a };
-      setPassportMeta((m) => ({ ...m, [copy[i].id]: { ...(m[copy[i].id] ?? { createdAt: Date.now(), source: p.source }), attempts: p.attempt } }));
-      return copy;
-    });
-    setVerdictFlash({ key: Date.now(), accepted: a.accepted, text: a.accepted ? "REPAIR VERIFIED" : "REPAIR REJECTED" });
-    if (a.accepted) {
-      say("judge", a.reasons[0], "good");
-      if (p.repair.kind === "add_connection") {
-        const nb = withConnection(b, p.repair.connection);
-        latest.current.building = nb;
-        setBuilding(nb);
-        setAddedIds((ids) => [...ids, (p.repair as { connection: Connection }).connection.id]);
-      } else {
-        const id = p.repair.connectionId;
-        setScenario((x) => ({ ...x, blockedConnectionIds: x.blockedConnectionIds.filter((y) => y !== id) }));
-      }
-      setSpent((x) => x + p.repair.cost);
-      latest.current.budgetLeft = left - p.repair.cost;
-      setFeedback([]);
-      setPhase("accepted");
-    } else {
-      say("judge", a.reasons[0], "bad");
-      setFeedback((f) => [...f, { repair: p.repair, reasons: a.reasons }]);
-      setPhase("rejected");
-    }
-    setBusy(false);
-    return a;
-  };
-
-  /**
-   * Signature demo: pre-written proposals (labelled "scripted") so the rejection
-   * moment is guaranteed on stage. Every verdict is still computed live by the auditor.
-   */
+  /** Pre-written proposals so the rejection moment is guaranteed; verdicts are live. */
   const runSignatureDemo = useCallback(async () => {
+    const sc = preset.scripted;
+    if (!sc) return;
     reset();
     const token = runToken.current;
     await wait(900);
-    say("system", "Scripted demo: proposals are pre-written; every verdict below is computed live by the auditor.", "warn");
+    say("system", "Scripted demo: proposals are pre-written; every verdict is computed live by the judge.", "warn");
     setPhase("attacking");
     setBusy(true);
+    bump("attacker");
     await wait(1400);
     if (token !== runToken.current) return;
     setBusy(false);
-    applyScenario(blockedD4Scenario, "scripted", "D4 is the last step-free link between the east lobby and an exit.", demoBuilding);
+    const { scenario: s } = applyScenario(sc.attack, "scripted", sc.attackReason);
     setPhase("attacked");
-    latest.current.building = demoBuilding;
-    latest.current.regressions = [blockedD4Scenario];
-    latest.current.budgetLeft = DEMO_BUDGET;
-    for (const [i, repair] of [invalidDemoRepair, validDemoRepair].entries()) {
+    S.current.regressions = [s];
+    for (const [i, { repair, reasoning }] of sc.repairs.entries()) {
       await wait(1300);
       if (token !== runToken.current) return;
       setPhase("defending");
       setBusy(true);
+      bump("defender");
       say("defender", `Scripted proposal ${i + 1}…`, "ai");
       await wait(1100);
       if (token !== runToken.current) return;
-      const p: NonNullable<Proposal> = {
-        repair,
-        reasoning:
-          i === 0
-            ? "Add a second door from Clinic 102 to the East Lobby so the clinic is better connected."
-            : "Add a step-free corridor from Clinic 102 to the West Exit, independent of the east lobby.",
-        source: "scripted",
-        attempt: i + 1,
-      };
+      const priced = withModelledCost(repair, S.current.building, S.current.rates);
+      const p: NonNullable<Proposal> = { repair: priced.repair, estimate: priced.estimate, reasoning, source: "scripted", attempt: i + 1 };
       setProposal(p);
       setPhase("proposed");
       setBusy(false);
-      say("defender", `Proposes ${describeRepair(repair)} for £${repair.cost.toLocaleString("en-GB")}.`, "ai");
+      say("defender", `Proposes ${describeRepair(p.repair)} · modelled cost £${p.repair.cost.toLocaleString("en-GB")}.`, "ai");
       await wait(1500);
       if (token !== runToken.current) return;
-      const a = await verifyFor(blockedD4Scenario, p);
+      const a = await judgeFor(s, p);
       if (a.accepted) break;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [applyScenario, reset, say]);
+  }, [applyScenario, judgeFor, preset.scripted, reset, say]);
 
-  /* ---------- autopilot: attacker, defender and judge loop on their own ---------- */
-  const [autopilot, setAutopilot] = useState(false);
+  /* autopilot */
   const autopilotRef = useRef(false);
   autopilotRef.current = autopilot;
   const runLoopRef = useRef(runLoop);
   runLoopRef.current = runLoop;
   const autopilotBusy = useRef(false);
-
   useEffect(() => {
     if (!autopilot || autopilotBusy.current) return;
     autopilotBusy.current = true;
     (async () => {
-      say("system", "Autopilot engaged: attacker, defender and judge loop until no tested disruption strands anyone.", "ai");
-      let clean = 0;
-      for (let round = 1; round <= 10; round++) {
-        await wait(1400);
+      const con = S.current.constraints;
+      const lifts = () => (con.liftsRecalled ? recalledLifts(S.current.building) : []);
+      say("system", `Autopilot engaged. Target: no combination of up to ${con.tolerance} failure(s) strands anyone. The attacker invents blockages; the engine sweeps every combination before signing off.`, "ai");
+      let status: Report["status"] = "stopped";
+      let remaining: Scenario | undefined;
+      for (let round = 1; round <= 14; round++) {
+        await wait(1100);
         if (!autopilotRef.current) break;
-        const status = await runLoopRef.current();
-        if (status === "cancelled") break;
-        if (status === "stuck") {
-          say("system", "Autopilot paused: no repair within budget passed the judge for the last failure.", "warn");
-          break;
+        // 1) Let the attacker invent its own blockage.
+        let r = await runLoopRef.current();
+        if (r === "cancelled") break;
+        if (r === "hardened") {
+          // 2) Attacker found nothing new: exhaustive engine sweep is the final word.
+          const cert = certify(S.current.building, con.tolerance, lifts());
+          say("judge", `Exhaustive sweep: ${cert.scenariosChecked} combinations checked, ${cert.failures.length} still strand someone.`, cert.faultFree ? "good" : "warn");
+          if (cert.faultFree) {
+            status = "fault-free";
+            break;
+          }
+          const f = cert.failures[0];
+          remaining = f.scenario;
+          r = await runLoopRef.current({
+            scenario: { ...f.scenario, id: f.scenario.id.replace(/^SWEEP_/, "SWEEP_"), name: `${f.scenario.name} (found by exhaustive sweep)` },
+            reason: `The attacker ran out of ideas, but the engine sweep found that blocking ${f.scenario.blockedConnectionIds.join(" + ")} strands ${f.result.unreachableOccupantIds.join(", ")}.`,
+          });
+          if (r === "cancelled") break;
         }
-        clean = status === "hardened" ? clean + 1 : 0;
-        if (clean >= 2) {
-          say("system", "Autopilot finished: the last two attacks stranded nobody. Download the verified plan below.", "good");
+        if (r === "stuck") {
+          status = "stuck";
+          remaining = S.current.scenario;
+          say("system", "Autopilot stopped: no fix within budget and constraints passes the judge for the last failure. Raise the budget or allow more repair types.", "warn");
           break;
         }
       }
+      const certificate = certify(S.current.building, con.tolerance, lifts());
+      if (certificate.faultFree) status = "fault-free";
+      setReport({ status, certificate, fixes: S.current.fixes, totalCost: S.current.spent, remaining: certificate.faultFree ? undefined : remaining ?? certificate.failures[0]?.scenario, at: Date.now() });
+      say("system", certificate.faultFree ? `Certified fault-free against any ${con.tolerance} failure(s): ${certificate.scenariosChecked} combinations checked, ${S.current.fixes.length} change(s), £${S.current.spent.toLocaleString("en-GB")}.` : "Autopilot finished with failures remaining. See the report.", certificate.faultFree ? "good" : "warn");
       autopilotBusy.current = false;
       setAutopilot(false);
     })();
   }, [autopilot, say]);
 
   return {
+    preset,
     building,
     scenario,
     result,
@@ -484,15 +492,25 @@ export function useDemoController() {
     passportMeta,
     regressions,
     spent,
-    budget: DEMO_BUDGET,
+    budget: constraints.budget,
     budgetLeft,
     log,
-    error,
     busy,
     gemini,
-    fragility,
+    rates,
+    ratesNote,
+    ratesLoading,
+    loadRates,
     verdictFlash,
     cameraResetKey,
+    runs,
+    tested,
+    certificate,
+    fixes,
+    report,
+    setReport,
+    autopilot,
+    setAutopilot,
     attack,
     redesign,
     verify,
@@ -500,9 +518,6 @@ export function useDemoController() {
     reset,
     runLoop,
     runSignatureDemo,
-    autopilot,
-    setAutopilot,
-    tested,
     resetCamera: () => setCameraResetKey((k) => k + 1),
   };
 }
@@ -512,7 +527,8 @@ export type DemoController = ReturnType<typeof useDemoController>;
 export function describeRepair(r: Repair): string {
   if (r.kind === "add_connection") {
     const c = r.connection;
-    return `new ${c.stepFree ? "step-free " : ""}connection ${c.id} (${c.from} ↔ ${c.to}, ${c.length} m)`;
+    const what = c.kind === "lift" ? (c.evacuationLift ? "evacuation lift" : "lift") : c.kind === "stairs" || !c.stepFree ? "staircase" : c.kind === "ramp" ? "ramp" : c.kind === "door" ? "additional step-free door" : "step-free corridor";
+    return `new ${what} ${c.id} (${c.from} ↔ ${c.to}, ${c.length} m)`;
   }
-  return `unblocking ${r.connectionId}`;
+  return `reopening ${r.connectionId}`;
 }

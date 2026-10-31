@@ -1,8 +1,9 @@
 "use client";
 
 import { useMemo } from "react";
-import { Html } from "@react-three/drei";
+
 import * as THREE from "three";
+import { Html } from "./SceneHtml";
 import type { Building } from "@/contracts/types";
 import { rectArea, type BuildingPlan, type FloorPlan, type Opening } from "@/data/demoPlan";
 import { buildWalls, type Wall } from "@/data/planWalls";
@@ -87,6 +88,9 @@ function Floor({
         })}
       {walls.map((w, i) => (
         <WallPiece key={i} w={w} height={wallHeight} />
+      ))}
+      {(floor.fixtures ?? []).map(([x0, z0, x1, z1, h], i) => (
+        <Fixture key={`fx${i}`} rect={[x0, z0, x1, z1]} h={h} />
       ))}
       {floor.voids.map(([x0, z0, x1, z1], i) => (
         <Balustrade key={i} rect={[x0, z0, x1, z1]} />
@@ -194,6 +198,46 @@ function WallPiece({ w, height }: { w: Wall; height: number }) {
           </mesh>
         );
       })}
+    </group>
+  );
+}
+
+/** Racking (tall) or desks (low): simple blocks with shelf lines. */
+function Fixture({ rect, h }: { rect: [number, number, number, number]; h: number }) {
+  const [x0, z0, x1, z1] = rect;
+  const w = x1 - x0;
+  const d = z1 - z0;
+  const tall = h > 1.5;
+  const shelves = tall ? 4 : 1;
+  return (
+    <group position={[(x0 + x1) / 2, 0, (z0 + z1) / 2]}>
+      {tall ? (
+        <>
+          {Array.from({ length: shelves }, (_, i) => (
+            <mesh key={i} position={[0, ((i + 1) * h) / shelves - 0.05, 0]} castShadow receiveShadow>
+              <boxGeometry args={[w, 0.08, d]} />
+              <meshStandardMaterial color="#e07b39" roughness={0.6} />
+            </mesh>
+          ))}
+          {Array.from({ length: Math.max(2, Math.round(w / 2.4) + 1) }, (_, i) => (
+            <mesh key={`u${i}`} position={[-w / 2 + (i * w) / Math.max(1, Math.round(w / 2.4)), h / 2, 0]} castShadow>
+              <boxGeometry args={[0.08, h, d]} />
+              <meshStandardMaterial color="#3b6ea5" roughness={0.5} metalness={0.3} />
+            </mesh>
+          ))}
+          {Array.from({ length: Math.floor(w / 1.3) }, (_, i) => (
+            <mesh key={`p${i}`} position={[-w / 2 + 0.7 + i * 1.3, h / shelves + 0.35, 0]} castShadow>
+              <boxGeometry args={[1, 0.6, d * 0.8]} />
+              <meshStandardMaterial color="#c8a978" roughness={0.9} />
+            </mesh>
+          ))}
+        </>
+      ) : (
+        <mesh position={[0, h / 2, 0]} castShadow receiveShadow>
+          <boxGeometry args={[w, h, d]} />
+          <meshStandardMaterial color="#ffffff" roughness={0.7} />
+        </mesh>
+      )}
     </group>
   );
 }

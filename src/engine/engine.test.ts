@@ -202,3 +202,17 @@ describe("resilienceFingerprint", () => {
     expect(fp.R101.stepFree).toBe(0); // upper floor has no step-free way down
   });
 });
+
+describe("certify", () => {
+  it("finds every single-failure weakness, and certifies after the fix", async () => {
+    const { certify } = await import("./index");
+    const before = certify(demoBuilding, 1);
+    expect(before.faultFree).toBe(false);
+    expect(before.failures.map((f) => f.scenario.blockedConnectionIds.join("+"))).toEqual(["D3", "D4"]);
+    const fixed = { ...demoBuilding, connections: [...demoBuilding.connections, (validDemoRepair as Extract<Repair, { kind: "add_connection" }>).connection] };
+    const after = certify(fixed, 1);
+    expect(after.faultFree).toBe(true);
+    expect(after.scenariosChecked).toBe(6);
+    expect(certify(fixed, 2).faultFree).toBe(false); // e.g. D2 + D5 still strands O1
+  });
+});

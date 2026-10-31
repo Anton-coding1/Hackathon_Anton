@@ -125,9 +125,11 @@ export function validateRepair(building: Building, scenario: Scenario, repair: R
     const a = building.nodes.find((n) => n.id === c.from);
     const b = building.nodes.find((n) => n.id === c.to);
     if (a && b) {
-      if (c.stepFree && a.floor !== b.floor) {
-        problems.push(`connection ${c.id} claims to be step-free between floors ${a.floor} and ${b.floor}; lifts are outside this model.`);
+      if (c.stepFree && a.floor !== b.floor && c.kind !== "lift" && c.kind !== "ramp") {
+        problems.push(`connection ${c.id} claims to be step-free between floors ${a.floor} and ${b.floor}; only a lift or ramp can do that (set kind).`);
       }
+      if (c.kind === "lift" && a.floor === b.floor) problems.push(`lift ${c.id} must join different floors.`);
+      if (c.kind === "stairs" && c.stepFree) problems.push(`stairs ${c.id} cannot be step-free.`);
       if (c.floor !== a.floor && c.floor !== b.floor) {
         problems.push(`connection ${c.id} is on floor ${c.floor}, but its endpoints are on floors ${a.floor} and ${b.floor}.`);
       }

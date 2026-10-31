@@ -1,5 +1,5 @@
-import { Dashboard } from "@/dashboard/Dashboard";
+import { Landing } from "@/landing/Landing";
 
 export default function Page() {
-  return <Dashboard />;
+  return <Landing />;
 }

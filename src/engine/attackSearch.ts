@@ -93,3 +93,51 @@ function rank(a: Scored, b: Scored): number {
 
 // Re-exported for callers that only need a quick check.
 export { simulate };
+
+export type Certificate = {
+  /** Largest number of simultaneous connection failures tested. */
+  tolerance: number;
+  scenariosChecked: number;
+  faultFree: boolean;
+  /** Failing scenarios, fewest blocked connections first, then most stranded. */
+  failures: AttackFinding[];
+};
+
+/**
+ * Exhaustive sweep: blocks every combination of up to `tolerance` connections
+ * (on top of `alwaysBlocked`, e.g. recalled lifts) and reports every combination
+ * that strands someone. Fault-free means no such combination exists.
+ */
+export function certify(building: Building, tolerance = 1, alwaysBlocked: string[] = []): Certificate {
+  assertValid(building);
+  const always = [...new Set(alwaysBlocked)].sort(cmp);
+  const ids = building.connections.map((c) => c.id).filter((id) => !always.includes(id)).sort(cmp);
+  const failures: AttackFinding[] = [];
+  let checked = 0;
+  const visit = (blocked: string[]) => {
+    const all = [...new Set([...blocked, ...always])].sort(cmp);
+    const scenario: Scenario = {
+      id: `SWEEP_${blocked.join("_") || "NONE"}`,
+      name: blocked.length ? `Block ${blocked.join(" + ")}${always.length ? " (lifts recalled)" : ""}` : "Lifts recalled",
+      blockedConnectionIds: all,
+    };
+    const result = simulate(building, scenario);
+    checked++;
+    if (result.unreachableOccupantIds.length) failures.push({ scenario, result });
+  };
+  if (always.length) visit([]);
+  const k = Math.max(0, Math.min(tolerance, 3));
+  const rec = (start: number, acc: string[]) => {
+    if (acc.length) visit(acc);
+    if (acc.length === k) return;
+    for (let i = start; i < ids.length; i++) rec(i + 1, [...acc, ids[i]]);
+  };
+  rec(0, []);
+  failures.sort(
+    (a, b) =>
+      a.scenario.blockedConnectionIds.length - b.scenario.blockedConnectionIds.length ||
+      b.result.unreachableOccupantIds.length - a.result.unreachableOccupantIds.length ||
+      cmp(a.scenario.id, b.scenario.id),
+  );
+  return { tolerance: k, scenariosChecked: checked, faultFree: failures.length === 0, failures };
+}

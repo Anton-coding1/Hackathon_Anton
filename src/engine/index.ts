@@ -1,6 +1,6 @@
-export { simulate, simulateDetailed, routeForOccupant } from "./simulate";
-export { findAttacks } from "./attackSearch";
-export type { AttackFinding } from "./attackSearch";
+export { simulate, simulateDetailed, routeForOccupant, fireAlarmScenario } from "./simulate";
+export { findAttacks, certify } from "./attackSearch";
+export type { AttackFinding, Certificate } from "./attackSearch";
 export { auditRepair, validateRepair, withConnection } from "./verifyRepair";
 export { resilienceFingerprint } from "./resilience";
 export type { Fingerprint } from "./resilience";

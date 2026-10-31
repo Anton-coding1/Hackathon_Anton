@@ -72,6 +72,11 @@ function explainUnreachable(building: Building, scenario: Scenario, occupant: Oc
     return routeForOccupant(building, reopened, occupant) !== null;
   });
   if (critical.length > 0) {
+    const lifts = critical.filter((id) => building.connections.find((c) => c.id === id)?.kind === "lift");
+    if (lifts.length === critical.length) {
+      const verb = lifts.length === 1 ? "is" : "are";
+      return `${occupant.id} (${occupant.label}) cannot reach ${exitKind} while lift ${lifts.join(", ")} ${verb} out of service.`;
+    }
     const list = critical.join(", ");
     const verb = critical.length === 1 ? "is" : "are";
     return `${occupant.id} (${occupant.label}) cannot reach ${exitKind} while connection ${list} ${verb} blocked.`;
@@ -80,4 +85,18 @@ function explainUnreachable(building: Building, scenario: Scenario, occupant: Oc
     return `${occupant.id} (${occupant.label}) cannot reach ${exitKind}; blocked connections ${blocked.join(", ")} together cut every eligible route.`;
   }
   return `${occupant.id} (${occupant.label}) has no ${occupant.requiresStepFree ? "step-free " : ""}route to ${exitKind}, even with nothing blocked.`;
+}
+
+/**
+ * Fire-alarm scenario: every lift that is not an evacuation lift is recalled and
+ * unusable, on top of any extra blocked connections.
+ */
+export function fireAlarmScenario(building: Building, extraBlocked: string[] = []): Scenario {
+  const lifts = building.connections.filter((c) => c.kind === "lift" && !c.evacuationLift).map((c) => c.id);
+  const blocked = [...new Set([...lifts, ...extraBlocked])].sort();
+  return {
+    id: `FIRE_ALARM${extraBlocked.length ? "_" + extraBlocked.join("_") : ""}`,
+    name: lifts.length ? `Fire alarm: lifts recalled (${lifts.join(", ")})` : "Fire alarm (no lifts to recall)",
+    blockedConnectionIds: blocked,
+  };
 }

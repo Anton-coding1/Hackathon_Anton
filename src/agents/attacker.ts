@@ -10,14 +10,14 @@ export type AttackProposal = { scenario: Scenario; reasoning: string; attempts: 
  * Asks Gemini for a NEW disruption to test. Output is validated against the real
  * building; one retry with the validation error, then a controlled failure.
  */
-export async function suggestAttack(building: Building, prior: { scenario: Scenario; result: TestResult }[]): Promise<AttackProposal> {
-  const base = attackerPrompt(building, prior);
+export async function suggestAttack(building: Building, prior: { scenario: Scenario; result: TestResult }[], maxBlocked = 2): Promise<AttackProposal> {
+  const base = `${attackerPrompt(building, prior)}\nBlock at most ${maxBlocked} connection(s).`;
   let prompt = base;
   let lastError = "";
   for (let attempt = 1; attempt <= 2; attempt++) {
     const text = await generateJson(ATTACKER_SYSTEM, prompt, ATTACK_SCHEMA);
     const parsed = parseJson(text);
-    const checked = parsed.ok ? validateAttack(parsed.value, building, prior.map((p) => p.scenario)) : parsed;
+    const checked = parsed.ok ? validateAttack(parsed.value, building, prior.map((p) => p.scenario), maxBlocked) : parsed;
     if (checked.ok) {
       const reasoning = parsed.ok && typeof (parsed.value as { reasoning?: unknown }).reasoning === "string" ? (parsed.value as { reasoning: string }).reasoning : "";
       return { scenario: checked.value, reasoning: reasoning.slice(0, 400), attempts: attempt };
