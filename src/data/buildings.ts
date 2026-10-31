@@ -99,7 +99,7 @@ export const PRESETS = {
     summary: "A clinic wing where one jammed lobby door leaves a wheelchair user with no step-free exit.",
     building: demoBuilding,
     plan: demoPlan,
-    defaultBudget: 80000,
+    defaultBudget: 1000000,
     defaultTolerance: 2,
     scenarios: [
       { id: "base", label: "Ordinary day", scenario: base },
@@ -123,7 +123,7 @@ export const PRESETS = {
     summary: "In a fire alarm the passenger lift is recalled, cutting the first-floor office off for anyone who can't use stairs.",
     building: industrialBuilding,
     plan: industrialPlan,
-    defaultBudget: 150000,
+    defaultBudget: 1000000,
     defaultTolerance: 1,
     scenarios: [
       { id: "base", label: "Ordinary day", scenario: base },
@@ -150,7 +150,7 @@ Object.assign(PRESETS, {
     summary: "A seven-storey apartment block with two stairs and one lift. In a fire alarm the lift is recalled and the wheelchair users on levels 3 and 6 have no way down.",
     building: tower.building,
     plan: tower.plan,
-    defaultBudget: 300000,
+    defaultBudget: 1000000,
     defaultTolerance: 1,
     defaultExploded: false,
     scenarios: [
@@ -175,7 +175,7 @@ Object.assign(PRESETS, {
     summary: "A ward block where three patients cannot use stairs. Both bed lifts are ordinary passenger lifts, so a fire alarm strands every one of them.",
     building: hospital.building,
     plan: hospital.plan,
-    defaultBudget: 250000,
+    defaultBudget: 1000000,
     defaultTolerance: 1,
     defaultExploded: false,
     scenarios: [
@@ -202,7 +202,7 @@ export function customPreset(building: Building): BuildingPreset {
     sector: "Uploaded building",
     summary: "Your uploaded floor plan, analysed by the same agents and judge.",
     building,
-    defaultBudget: 150000,
+    defaultBudget: 1000000,
     defaultTolerance: 1,
     scenarios: [{ id: "base", label: "Ordinary day", scenario: base }],
   };

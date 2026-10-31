@@ -111,8 +111,8 @@ export function ControlPanel({
           <input
             type="range"
             min={5000}
-            max={300000}
-            step={5000}
+            max={2000000}
+            step={10000}
             value={constraints.budget}
             disabled={c.busy}
             onChange={(e) => setConstraints({ ...constraints, budget: Number(e.target.value) })}
