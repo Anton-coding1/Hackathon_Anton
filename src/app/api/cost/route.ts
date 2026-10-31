@@ -17,7 +17,7 @@ const TTL = 60 * 60 * 1000;
 export async function GET(req: Request) {
   const refresh = new URL(req.url).searchParams.get("refresh") === "1";
   if (cache && !refresh && Date.now() - cache.at < TTL) return NextResponse.json({ success: true, data: cache.rates });
-  const { key, model } = geminiConfig();
+  const { key, fastModel: model } = geminiConfig();
   if (!key) return NextResponse.json({ success: true, data: DEFAULT_RATES, note: "GEMINI_API_KEY not set; using built-in indicative rates." });
 
   const keys = Object.keys(RATE_LABELS) as RateKey[];
@@ -33,7 +33,7 @@ Also include "notes": one sentence on assumptions.`;
     const res = await ai.models.generateContent({
       model,
       contents: prompt,
-      config: { tools: [{ googleSearch: {} }], temperature: 0.2, abortSignal: controller.signal },
+      config: { tools: [{ googleSearch: {} }], abortSignal: controller.signal },
     });
     clearTimeout(t);
     const text = res.text ?? "";
@@ -49,6 +49,7 @@ Also include "notes": one sentence on assumptions.`;
     const data: CostRates = {
       currency: "GBP",
       source: "gemini-search",
+      model,
       asOf: new Date().toISOString().slice(0, 10),
       rates,
       sources,

@@ -18,14 +18,15 @@ export type FlowStream = {
   room?: [number, number, number, number];
 };
 
-const PER_STREAM = 900;
+const TOTAL_PARTICLES = 3600;
 const SPEED = 2.6; // m/s
 
 /**
  * Thousands of particles streaming along each engine route (a flow visualisation,
  * not a crowd simulation). Stranded streams circulate in their start room in red.
  */
-export function FlowVisual({ streams, showLabels }: { streams: FlowStream[]; showLabels: boolean }) {
+export function FlowVisual({ streams, labelMode }: { streams: FlowStream[]; labelMode: "all" | "minimal" | "none" }) {
+  const PER_STREAM = Math.max(220, Math.min(900, Math.floor(TOTAL_PARTICLES / Math.max(1, streams.length))));
   const count = streams.length * PER_STREAM;
   const mesh = useRef<THREE.InstancedMesh>(null);
   const polys = useMemo(() => streams.map((s) => (s.points && s.points.length > 1 ? new Polyline(s.points) : null)), [streams]);
@@ -51,7 +52,7 @@ export function FlowVisual({ streams, showLabels }: { streams: FlowStream[]; sho
       }
     });
     if (m.instanceColor) m.instanceColor.needsUpdate = true;
-  }, [streams, seeds]);
+  }, [streams, seeds, PER_STREAM]);
 
   useFrame(({ clock }) => {
     const m = mesh.current;
@@ -101,8 +102,10 @@ export function FlowVisual({ streams, showLabels }: { streams: FlowStream[]; sho
         <sphereGeometry args={[0.1, 8, 6]} />
         <meshStandardMaterial roughness={0.35} metalness={0} emissive="#ffffff" emissiveIntensity={0.08} />
       </instancedMesh>
-      {showLabels &&
-        streams.map((s) => (
+      {labelMode !== "none" &&
+        streams
+          .filter((s) => labelMode === "all" || !s.points)
+          .map((s) => (
           <Html key={s.occupantId} position={[s.start.x, s.start.y + 2.9, s.start.z]} center zIndexRange={[50, 40]} pointerEvents="none">
             <div className={`p-occ ${s.points ? (s.stepFree ? "is-sf" : "") : "is-alert"}`}>
               <b>{s.occupantId}</b> {s.label}

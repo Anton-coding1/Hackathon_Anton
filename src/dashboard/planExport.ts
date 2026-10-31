@@ -1,6 +1,7 @@
 import type { Building, Connection, RepairAudit, Repair, TestResult } from "@/contracts/types";
 import { rectArea, type BuildingPlan, type FloorPlan, type Rect } from "@/data/demoPlan";
 import { autoPlan } from "@/data/autoPlan";
+import { addedConnections, repairRef } from "@/engine";
 import type { CostRates } from "@/cost/costModel";
 import { buildWalls } from "@/data/planWalls";
 
@@ -43,8 +44,15 @@ export function buildPlanSvg({ building, plan: planIn, result, repairs, budget, 
   const height = Math.round(headerH + floorBlocks.reduce((a, b) => a + b, 0) + scheduleH + 90);
   const X = (x: number) => PAD + (x - minX) * S;
   const nodes = new Map(building.nodes.map((n) => [n.id, n]));
-  const addedIds = new Set(repairs.filter((r) => r.audit?.accepted && r.repair.kind === "add_connection").map((r) => (r.repair as { connection: Connection }).connection.id));
+  const addedIds = new Set(repairs.filter((r) => r.audit?.accepted).flatMap((r) => addedConnections(r.repair).map((c) => c.id)));
   const totalArea = floors.reduce((s, f) => s + floorArea(f), 0);
+  const changeNo = new Map<string, number>();
+  repairs
+    .filter((r) => r.audit?.accepted)
+    .forEach((r, k) => {
+      if (r.repair.kind === "unblock_connection") changeNo.set(r.repair.connectionId, k + 1);
+      else for (const c of addedConnections(r.repair)) changeNo.set(c.id, k + 1);
+    });
   const spent = repairs.filter((r) => r.audit?.accepted).reduce((s, r) => s + r.repair.cost, 0);
   const date = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric" });
 
@@ -77,42 +85,42 @@ export function buildPlanSvg({ building, plan: planIn, result, repairs, budget, 
       out.push(`<rect x="${X(x0)}" y="${Z(z0)}" width="${(x1 - x0) * S}" height="${(z1 - z0) * S}" fill="${fill}"/>`);
     }
 
-    // Proposed / verified new connections: hatched band now, callout drawn last (on top)
+    // Verified changes: a light hatched band for new corridors, and a numbered marker
+    // (matching the schedule below) for every change. Drawn last so nothing covers them.
     const callouts: string[] = [];
+    const placed: [number, number][] = [];
+    const marker = (x: number, y: number, n: number) => {
+      let px = x;
+      let py = y;
+      while (placed.some(([qx, qy]) => Math.hypot(qx - px, qy - py) < 24)) px += 24;
+      placed.push([px, py]);
+      callouts.push(`<g><circle cx="${px}" cy="${py}" r="11" fill="#2563eb" stroke="#fff" stroke-width="2"/><text x="${px}" y="${py + 4}" font-size="11" font-weight="800" fill="#fff" text-anchor="middle">${n}</text></g>`);
+    };
     for (const c of building.connections) {
-      if (!addedIds.has(c.id)) continue;
+      const n = changeNo.get(c.id);
+      if (!n) continue;
       const a = nodes.get(c.from);
       const b = nodes.get(c.to);
       if (!a || !b) continue;
       if (a.floor !== b.floor) {
-        if (Math.max(a.floor, b.floor) !== f.floor) continue;
+        if (a.floor !== f.floor && b.floor !== f.floor) continue;
         const U0 = a.floor > b.floor ? a : b;
-        const hx = X(U0.position[0]);
-        const hy = Z(U0.position[2]);
-        const cost = repairs.find((x) => x.repair.kind === "add_connection" && x.repair.connection.id === c.id)?.repair.cost ?? 0;
-        const lx = Math.min(Math.max(hx, X(f.footprint[0]) + 430), X(f.footprint[2]) - 160);
-        const ly = Z(f.footprint[1]) - 12;
-        callouts.push(`<line x1="${hx}" y1="${hy}" x2="${lx}" y2="${ly}" stroke="#2563eb" stroke-width="1.5"/><circle cx="${hx}" cy="${hy}" r="4" fill="#2563eb"/>`);
-        callouts.push(`<g><rect x="${lx - 150}" y="${ly - 30}" width="300" height="34" rx="5" fill="#2563eb"/><text x="${lx}" y="${ly - 16}" font-size="11" font-weight="700" fill="#fff" text-anchor="middle" letter-spacing="1">PROPOSED · ${esc(c.id)} · ${c.kind === "lift" ? (c.evacuationLift ? "EVACUATION LIFT" : "LIFT") : "STAIR"}</text><text x="${lx}" y="${ly - 3}" font-size="10.5" fill="#dbeafe" text-anchor="middle">${esc(c.from)} ↔ ${esc(c.to)} · £${cost.toLocaleString("en-GB")}</text></g>`);
+        marker(X(U0.position[0]) + 1.3 * S, Z(U0.position[2]) - 1.3 * S, n);
         continue;
       }
       if (a.floor !== f.floor) continue;
       const [ax, az] = [a.position[0], a.position[2]];
       const [bx, bz] = [b.position[0], b.position[2]];
-      const horiz = Math.abs(bx - ax) >= Math.abs(bz - az);
-      const r: Rect = horiz ? [Math.min(ax, bx), az - 1.2, Math.max(ax, bx), az + 1.2] : [ax - 1.2, Math.min(az, bz), ax + 1.2, Math.max(az, bz)];
-      out.push(`<rect x="${X(r[0])}" y="${Z(r[1])}" width="${(r[2] - r[0]) * S}" height="${(r[3] - r[1]) * S}" fill="url(#hatch)" stroke="#2563eb" stroke-width="2" stroke-dasharray="6 4"/>`);
-      out.push(`<rect x="${X(r[0])}" y="${Z(r[1])}" width="${(r[2] - r[0]) * S}" height="${(r[3] - r[1]) * S}" fill="none"/>`);
-      const cost = repairs.find((x) => x.repair.kind === "add_connection" && x.repair.connection.id === c.id)?.repair.cost ?? 0;
-      const hx = X((r[0] + r[2]) / 2);
-      const hy = Z((r[1] + r[3]) / 2);
-      const lx = Math.min(Math.max(hx, X(f.footprint[0]) + 430), X(f.footprint[2]) - 160);
-      const ly = Z(f.footprint[1]) - 12;
-      callouts.push(`<line x1="${hx}" y1="${hy}" x2="${lx}" y2="${ly}" stroke="#2563eb" stroke-width="1.5"/><circle cx="${hx}" cy="${hy}" r="4" fill="#2563eb"/>`);
-      callouts.push(`<g><rect x="${lx - 150}" y="${ly - 30}" width="300" height="34" rx="5" fill="#2563eb"/><text x="${lx}" y="${ly - 16}" font-size="11" font-weight="700" fill="#fff" text-anchor="middle" letter-spacing="1">PROPOSED · ${esc(c.id)}${c.stepFree ? " · STEP-FREE" : ""}</text><text x="${lx}" y="${ly - 3}" font-size="10.5" fill="#dbeafe" text-anchor="middle">New ${c.length.toFixed(1)} m link ${esc(c.from)} ↔ ${esc(c.to)} · £${cost.toLocaleString("en-GB")}</text></g>`);
+      if (c.kind !== "door") {
+        const horiz = Math.abs(bx - ax) >= Math.abs(bz - az);
+        const r: Rect = horiz ? [Math.min(ax, bx), az - 0.7, Math.max(ax, bx), az + 0.7] : [ax - 0.7, Math.min(az, bz), ax + 0.7, Math.max(az, bz)];
+        out.push(`<rect x="${X(r[0])}" y="${Z(r[1])}" width="${(r[2] - r[0]) * S}" height="${(r[3] - r[1]) * S}" fill="url(#hatch)" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="5 4"/>`);
+      }
+      marker(X((ax + bx) / 2), Z((az + bz) / 2), n);
     }
 
     // Stair treads for links that change level and touch this floor
+    const liftSlots = new Map<string, number>();
     for (const c of building.connections) {
       const a = nodes.get(c.from);
       const b = nodes.get(c.to);
@@ -120,13 +128,16 @@ export function buildPlanSvg({ building, plan: planIn, result, repairs, budget, 
       if (a.floor !== f.floor && b.floor !== f.floor) continue;
       if (c.kind === "lift") {
         const U0 = a.floor > b.floor ? a : b;
-        const lx = X(U0.position[0]);
+        const key = `${U0.position[0]},${U0.position[2]},${f.floor}`;
+        const k = liftSlots.get(key) ?? 0;
+        liftSlots.set(key, k + 1);
+        const lx = X(U0.position[0]) + k * 2 * S;
         const lz = Z(U0.position[2]);
-        const h = 0.9 * S;
+        const h = 0.85 * S;
         const col = c.evacuationLift ? "#16a34a" : "#374151";
         const isNew = addedIds.has(c.id);
         out.push(`<rect x="${lx - h}" y="${lz - h}" width="${2 * h}" height="${2 * h}" fill="${isNew ? "url(#hatch)" : "#fff"}" stroke="${isNew ? "#2563eb" : col}" stroke-width="2"/><line x1="${lx - h}" y1="${lz - h}" x2="${lx + h}" y2="${lz + h}" stroke="${col}" stroke-width="1"/><line x1="${lx + h}" y1="${lz - h}" x2="${lx - h}" y2="${lz + h}" stroke="${col}" stroke-width="1"/>`);
-        out.push(`<text x="${lx}" y="${lz + h + 12}" font-size="9" font-weight="700" fill="${col}" text-anchor="middle">${esc(c.id)} ${c.evacuationLift ? "EVAC LIFT" : "LIFT"}</text>`);
+        out.push(`<text x="${lx}" y="${lz + h + 11}" font-size="8.5" font-weight="700" fill="${col}" text-anchor="middle">${c.evacuationLift ? "EVAC" : "LIFT"}</text>`);
         continue;
       }
       const U = a.floor > b.floor ? a : b;
@@ -225,12 +236,15 @@ export function buildPlanSvg({ building, plan: planIn, result, repairs, budget, 
   for (const r of accepted) {
     ty += 34;
     const c = r.repair.kind === "add_connection" ? r.repair.connection : null;
-    const desc = c
+    const desc = r.repair.kind === "add_connections"
+      ? r.repair.label ?? `${r.repair.connections.length} new connections`
+      : c
       ? c.kind === "lift"
         ? `New ${c.evacuationLift ? "evacuation " : ""}lift ${c.from} ↔ ${c.to}`
         : `New ${c.stepFree ? "step-free " : ""}${c.kind === "stairs" || !c.stepFree ? "staircase" : "link"} ${c.from} ↔ ${c.to}`
       : `Reopen ${(r.repair as { connectionId: string }).connectionId}${building.connections.find((x) => x.id === (r.repair as { connectionId: string }).connectionId)?.kind === "lift" ? " (secondary power + evacuation controls)" : ""}`;
-    out.push(`<text x="${cols[0]}" y="${ty}" font-size="12" font-weight="700" fill="#2563eb">${esc(c?.id ?? (r.repair as { connectionId: string }).connectionId)}</text>`);
+    const refId = repairRef(r.repair);
+    out.push(`<circle cx="${cols[0] + 9}" cy="${ty - 4}" r="9" fill="#2563eb"/><text x="${cols[0] + 9}" y="${ty}" font-size="10" font-weight="800" fill="#fff" text-anchor="middle">${changeNo.get(refId) ?? ""}</text><text x="${cols[0] + 24}" y="${ty}" font-size="11" font-weight="700" fill="#2563eb">${esc(refId)}</text>`);
     out.push(`<text x="${cols[1]}" y="${ty}" font-size="12" fill="#111827">${esc(desc)}</text>`);
     if (r.scenario) out.push(`<text x="${cols[1]}" y="${ty + 15}" font-size="10.5" fill="#6b7280">Resolves: ${esc(r.scenario.name)} (blocked ${esc(r.scenario.blockedConnectionIds.join(" + "))})</text>`);
     out.push(`<text x="${cols[2]}" y="${ty}" font-size="12" fill="#16a34a" font-weight="700">ACCEPTED</text>`);
@@ -254,7 +268,7 @@ export function buildPlanSvg({ building, plan: planIn, result, repairs, budget, 
   // Legend + disclaimer
   ty += 30;
   const lg = [
-    ["#2563eb", "Proposed change (hatched)"],
+    ["#2563eb", "Verified change (numbered, see schedule)"],
     ["#16a34a", "Escape route (engine-verified)"],
     ["#0891b2", "Step-free route"],
     ["#2b2f36", "Walls"],

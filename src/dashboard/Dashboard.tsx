@@ -20,8 +20,8 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
   const [constraints, setConstraints] = useState<Constraints>(() => defaultConstraints(preset));
   const c = useDemoController(preset, constraints);
   const [stressOn, setStressOn] = useState(true);
-  const [exploded, setExploded] = useState(true);
-  const [labels, setLabels] = useState(true);
+  const [exploded, setExploded] = useState(preset.defaultExploded ?? true);
+  const [labels, setLabels] = useState(false);
   const [drawer, setDrawer] = useState<"log" | "passports">("log");
   const [preview, setPreview] = useState<string | null>(null);
   const stress = useStressTest(c.building, stressOn, constraints.liftsRecalled);
@@ -40,6 +40,8 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
     if (el) el.scrollTop = el.scrollHeight;
   }, [c.log.length]);
 
+  const focus = c.autopilot || c.demoRunning;
+  const lastLog = c.log[c.log.length - 1];
   const activity: Activity = c.phase === "attacking" ? "attacking" : c.phase === "defending" ? "defending" : c.phase === "auditing" ? "auditing" : "idle";
 
   const proposalConn =
@@ -87,6 +89,7 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
     defending: "Defender designing",
     proposed: "Change proposed",
     auditing: "Judge verifying",
+    approval: "Waiting for your approval",
     accepted: "Change verified",
     rejected: "Change rejected",
   }[c.phase];
@@ -102,7 +105,21 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
             Exit<b>Zero</b>
           </div>
           <div className="crumbs">
-            <a href="/">Home</a>/<span>{preset.title}</span>/<b>Resilience study</b>
+            <a href="/">Home</a>/
+            <select
+              className="bsel"
+              value={preset.id}
+              onChange={(e) => {
+                window.location.href = `/lab?b=${e.target.value}`;
+              }}
+            >
+              <option value="tower">Riverside Tower · apartments</option>
+              <option value="hospital">St Aldric&apos;s · hospital</option>
+              <option value="industrial">Northfield Works · industrial</option>
+              <option value="clinic">Blackwood Hall · clinic</option>
+              {preset.id === "custom" && <option value="custom">{preset.title} · uploaded</option>}
+            </select>
+            /<b>Resilience study</b>
           </div>
         </div>
         <div className="top-pills">
@@ -113,7 +130,7 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
           <span className="pill mono">{c.scenario.id}</span>
           <span className={`pill ${c.gemini.configured ? "pill-ai" : "pill-warn"}`} title={c.gemini.configured ? "Gemini agents active" : "Set GEMINI_API_KEY on the server to enable Gemini"}>
             <i />
-            {!c.gemini.checked ? "Checking Gemini…" : c.gemini.configured ? `Gemini · ${c.gemini.model}` : "Gemini not connected"}
+            {!c.gemini.checked ? "Checking Gemini…" : c.gemini.configured ? `${prettyModel(c.gemini.model)}${c.gemini.fastModel ? ` + ${prettyModel(c.gemini.fastModel)}` : ""}` : "Gemini not connected · built-in agents"}
           </span>
           <span className="pill">{preset.sector}</span>
           <button className="pill pill-btn" onClick={() => setPreview(planSvg())}>
@@ -122,7 +139,7 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
         </div>
       </header>
 
-      <main className="stage">
+      <main className={`stage ${focus ? "is-focus" : ""}`}>
         <BuildingScene
           building={c.building}
           scenario={c.scenario}
@@ -134,13 +151,54 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
           activity={activity}
           heat={stress.heat}
           exploded={exploded}
-          showLabels={labels}
+          labelMode={focus || !labels ? "minimal" : "all"}
           cameraResetKey={c.cameraResetKey}
-          framing={{ visibleFraction: 0.62, offset: [2.5, -2, 3.5] }}
+          framing={focus ? { visibleFraction: 0.95, offset: [0, -1.5, 1] } : { visibleFraction: 0.62, offset: [2.5, -2, 3.5] }}
         />
         <div className="viewport-tag">
-          <b>3D model</b> · {exploded ? "exploded axonometric" : "stacked"} · {(stress.perSecond || 0).toLocaleString("en-GB")} scenarios/s
+          <b>3D model</b> · {exploded ? "exploded axonometric" : "stacked"} · {stress.done ? `${stress.evaluated.toLocaleString("en-GB")} stress scenarios checked` : `${(stress.perSecond || 0).toLocaleString("en-GB")} scenarios/s`}
         </div>
+        {focus && (
+          <div className="focus-hud">
+            <span className={`hud-dot phase-${c.phase}`} />
+            <div className="hud-text">
+              <b>{statusText}</b>
+              <span>{lastLog?.text}</span>
+            </div>
+            <div className="hud-stats">
+              <span>
+                <b>{c.runs.attacker}</b> attacks
+              </span>
+              <span>
+                <b>{c.fixes.length}</b> fixes
+              </span>
+              <span>
+                <b>£{c.spent.toLocaleString("en-GB")}</b> spent
+              </span>
+            </div>
+            <button className="hud-stop" onClick={() => c.reset()}>
+              Stop
+            </button>
+          </div>
+        )}
+        {c.approval && (
+          <div className="approval">
+            <span className="kicker-sm">Your decision</span>
+            <b>{describeRepair(c.approval.proposal.repair)}</b>
+            <p>
+              Fixes <em>{c.approval.scenarioName}</em>. The judge has verified it works. It costs <strong>£{c.approval.proposal.repair.cost.toLocaleString("en-GB")}</strong>, which is over your £
+              {constraints.approveOver.toLocaleString("en-GB")} limit.
+            </p>
+            <div className="dl">
+              <button className="btn btn-sm btn-dark" onClick={() => c.approval?.resolve(true)}>
+                Approve £{c.approval.proposal.repair.cost.toLocaleString("en-GB")}
+              </button>
+              <button className="btn btn-sm" onClick={() => c.approval?.resolve(false)}>
+                Decline, find cheaper
+              </button>
+            </div>
+          </div>
+        )}
         {c.verdictFlash && <VerdictStamp key={c.verdictFlash.key} accepted={c.verdictFlash.accepted} text={c.verdictFlash.text} />}
         <ControlPanel c={c} stress={stress} stressOn={stressOn} setStressOn={setStressOn} exploded={exploded} setExploded={setExploded} labels={labels} setLabels={setLabels} constraints={constraints} setConstraints={setConstraints} />
         <ResultsPanel c={c} stress={stress} onDownload={onDownload} />
@@ -203,6 +261,12 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
       )}
     </div>
   );
+}
+
+function prettyModel(id: string): string {
+  if (/argon/i.test(id)) return "Gemini 4 Argon";
+  const m = id.match(/gemini-([\d.]+)-(flash-lite|flash|pro)/i);
+  return m ? `Gemini ${m[1]} ${m[2].replace("-", " ").replace(/\b\w/g, (x) => x.toUpperCase())}` : id;
 }
 
 function ReportModal({ c, onDownload, onPlan }: { c: ReturnType<typeof useDemoController>; onDownload: (k: "svg" | "png" | "json") => void; onPlan: () => void }) {

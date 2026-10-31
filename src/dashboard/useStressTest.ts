@@ -6,6 +6,11 @@ import { simulate } from "@/engine";
 
 export type StressStats = {
   evaluated: number;
+  /** Sample size for one run; the test stops once it is reached. */
+  target: number;
+  done: boolean;
+  /** Wall-clock seconds the run took. */
+  seconds: number;
   perSecond: number;
   failing: number;
   /** Distinct sets of blocked connections that strand someone. */
@@ -15,12 +20,13 @@ export type StressStats = {
   worst: { blocked: string[]; stranded: string[] } | null;
 };
 
-const EMPTY: StressStats = { evaluated: 0, perSecond: 0, failing: 0, failureModes: 0, heat: {}, worst: null };
+export const STRESS_SAMPLES = 20000;
+const EMPTY: StressStats = { evaluated: 0, target: STRESS_SAMPLES, done: false, seconds: 0, perSecond: 0, failing: 0, failureModes: 0, heat: {}, worst: null };
 
 /**
- * Continuous Monte Carlo stress test: samples random 1–3 connection failures and
- * runs each through the real engine, thousands per second. Restarts when the
- * building changes (e.g. after a verified repair).
+ * Monte Carlo stress test: samples STRESS_SAMPLES random 1–3 connection failures,
+ * runs each through the real engine (thousands per second), then stops.
+ * Runs again whenever the building changes (e.g. after a verified repair).
  */
 export function useStressTest(building: Building, running: boolean, liftsRecalled = false): StressStats {
   const [stats, setStats] = useState<StressStats>(EMPTY);
@@ -38,12 +44,14 @@ export function useStressTest(building: Building, running: boolean, liftsRecalle
       seed = (seed * 1103515245 + 12345) & 0x7fffffff;
       return seed / 0x7fffffff;
     };
+    const started = performance.now();
+    let h: ReturnType<typeof setInterval> | undefined;
     const tick = () => {
       const a = acc.current;
       const t0 = performance.now();
       let n = 0;
       // Spend up to ~12 ms per tick so the UI stays smooth.
-      while (performance.now() - t0 < 12) {
+      while (performance.now() - t0 < 12 && a.evaluated + n < STRESS_SAMPLES) {
         const k = 1 + Math.floor(rnd() * Math.min(3, ids.length));
         const pick = new Set<string>();
         while (pick.size < k) pick.add(ids[Math.floor(rnd() * ids.length)]);
@@ -71,9 +79,11 @@ export function useStressTest(building: Building, running: boolean, liftsRecalle
       const perSecond = Math.round(a.window.reduce((s, [, c]) => s + c, 0) / Math.max(span, 0.25));
       const heat: Record<string, number> = {};
       for (const id of ids) heat[id] = a.seen[id] ? (a.bad[id] ?? 0) / a.seen[id] : 0;
-      setStats({ evaluated: a.evaluated, perSecond, failing: a.failing, failureModes: a.modes.size, heat, worst: a.worst });
+      const done = a.evaluated >= STRESS_SAMPLES;
+      setStats({ evaluated: a.evaluated, target: STRESS_SAMPLES, done, seconds: (now - started) / 1000, perSecond, failing: a.failing, failureModes: a.modes.size, heat, worst: a.worst });
+      if (done && h) clearInterval(h);
     };
-    const h = setInterval(tick, 100);
+    h = setInterval(tick, 100);
     return () => clearInterval(h);
   }, [building, running, liftsRecalled]);
 

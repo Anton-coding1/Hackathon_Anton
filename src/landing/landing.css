@@ -125,3 +125,27 @@
   .l-trust ul { grid-template-columns: 1fr; }
   .upload-ok { flex-direction: column; align-items: stretch; }
 }
+
+.upload-notes { color: #86efac; font-size: 12px; }
+
+/* hero v2 */
+.l-hero2 { max-width: 1320px; margin: 0 auto; padding: 64px 40px 40px; display: grid; gap: 40px; }
+.l-hero-copy h1 { font-size: clamp(40px, 5.6vw, 78px); line-height: 1.02; letter-spacing: -0.035em; margin: 0; font-weight: 700; max-width: 1000px; }
+.l-hero-copy h1 span { color: #6b7280; }
+.l-stats { display: flex; gap: 36px; margin-top: 36px; flex-wrap: wrap; }
+.l-stats div { display: grid; gap: 2px; }
+.l-stats b { font-size: 28px; letter-spacing: -0.02em; }
+.l-stats span { color: var(--l-muted); font-size: 13px; }
+.l-hero-card { max-width: none; grid-template-columns: 1fr 360px; }
+.l-hero-card .l-demo-scene { min-height: 600px; }
+.l-verdict-float { position: absolute; z-index: 3; top: 16px; left: 16px; display: grid; gap: 2px; padding: 12px 16px; border-radius: 12px; background: rgba(255, 255, 255, 0.94); border: 1px solid #e4e7ec; box-shadow: 0 10px 30px rgba(16, 24, 40, 0.14); transition: all 0.3s; }
+.l-verdict-float b { font-size: 20px; letter-spacing: 0.06em; }
+.l-verdict-float span { font-size: 12.5px; color: #475467; }
+.l-verdict-float.ok b { color: #12a150; }
+.l-verdict-float.risk { border-color: #fecdca; background: rgba(254, 243, 242, 0.96); }
+.l-verdict-float.risk b { color: #dc2626; }
+@media (max-width: 900px) {
+  .l-hero2 { padding: 40px 18px 24px; }
+  .l-hero-card { grid-template-columns: 1fr; }
+  .l-hero-card .l-demo-scene { min-height: 420px; }
+}

@@ -1,7 +1,7 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { PRESETS } from "@/data/buildings";
 import { simulate } from "@/engine";
 import { UploadPanel } from "./UploadPanel";
@@ -13,9 +13,17 @@ const BuildingScene = dynamic(() => import("@/scene/BuildingScene").then((m) => 
 });
 
 export function Landing() {
-  const [bid, setBid] = useState<"clinic" | "industrial">("industrial");
+  const [bid, setBid] = useState<"tower" | "hospital" | "industrial" | "clinic">("tower");
   const preset = PRESETS[bid];
   const [sid, setSid] = useState("base");
+  const [auto, setAuto] = useState(true);
+  // The hero plays by itself until someone touches it.
+  useEffect(() => {
+    if (!auto) return;
+    const ids = preset.scenarios.map((x) => x.id);
+    const t = setInterval(() => setSid((cur) => ids[(ids.indexOf(cur) + 1) % ids.length]), 4200);
+    return () => clearInterval(t);
+  }, [auto, preset]);
   const sc = preset.scenarios.find((s) => s.id === sid) ?? preset.scenarios[0];
   const result = useMemo(() => simulate(preset.building, sc.scenario), [preset, sc]);
   const atRisk = result.unreachableOccupantIds.length > 0;
@@ -37,41 +45,56 @@ export function Landing() {
         </a>
       </nav>
 
-      <header className="l-hero">
-        <p className="kicker">Adversarial building resilience</p>
-        <h1>
-          Find the door that strands someone.
-          <br />
-          <span>Before it happens.</span>
-        </h1>
-        <p className="l-sub">
-          AI agents attack your floor plan, propose costed fixes, and an independent judge proves which ones actually work, down to the lift that gets recalled when the fire alarm sounds.
-        </p>
-        <div className="l-ctas">
-          <a className="l-btn l-btn-primary" href={`/lab?b=${bid}&autoplay=1`}>
-            Run the live demo
-          </a>
-          <a className="l-btn" href="#upload">
-            Upload your floor plan
-          </a>
+      <header className="l-hero2" id="demo">
+        <div className="l-hero-copy">
+          <p className="kicker">Adversarial building resilience · Gemini 4 Argon</p>
+          <h1>
+            Find the door that strands someone.
+            <span> Before it happens.</span>
+          </h1>
+          <p className="l-sub">
+            Gemini 4 Argon attacks your floor plan, designs costed fixes and argues with an independent judge until no single failure can trap anyone, down to the lift that gets recalled when the fire alarm sounds.
+          </p>
+          <div className="l-ctas">
+            <a className="l-btn l-btn-primary" href={`/lab?b=${bid}&autoplay=1`}>
+              Run the live demo
+            </a>
+            <a className="l-btn" href="#upload">
+              Upload your floor plan
+            </a>
+          </div>
+          <div className="l-stats">
+            <div>
+              <b>&lt; 3 min</b>
+              <span>to a certified fault-free plan</span>
+            </div>
+            <div>
+              <b>20,000</b>
+              <span>failure scenarios per design</span>
+            </div>
+            <div>
+              <b>0</b>
+              <span>unverified AI claims shipped</span>
+            </div>
+          </div>
         </div>
-      </header>
 
-      <section className="l-demo" id="demo">
-        <div className="l-section-head">
-          <p className="kicker">Interactive demo</p>
-          <h2>Watch a decision being made.</h2>
-        </div>
-        <div className="l-demo-card">
+        <div className="l-demo-card l-hero-card">
           <div className="l-demo-scene">
-            <BuildingScene building={preset.building} scenario={sc.scenario} result={result} plan={preset.plan} showLabels={false} exploded />
-            <div className="l-scene-tag">Live engine · every route solved in your browser</div>
+            <BuildingScene building={preset.building} scenario={sc.scenario} result={result} plan={preset.plan} labelMode="minimal" exploded={preset.defaultExploded ?? true} />
+            <div className={`l-verdict-float ${atRisk ? "risk" : "ok"}`}>
+              <b>{atRisk ? "AT RISK" : "ALL CLEAR"}</b>
+              <span>
+                {result.reachableCount}/{result.totalCount} can reach an eligible exit
+              </span>
+            </div>
+            <div className="l-scene-tag">{auto ? "Live · cycling scenarios" : "Live engine"} · every route solved in your browser</div>
           </div>
           <aside className="l-demo-side">
             <div className="l-toggle-group">
               <span>Building</span>
               <div className="l-toggles">
-                {(["industrial", "clinic"] as const).map((k) => (
+                {(["tower", "hospital", "industrial", "clinic"] as const).map((k) => (
                   <button
                     key={k}
                     className={bid === k ? "on" : ""}
@@ -89,18 +112,19 @@ export function Landing() {
             <div className="l-toggle-group">
               <span>Scenario</span>
               <div className="l-toggles">
-                {preset.scenarios.map((s) => (
-                  <button key={s.id} className={sid === s.id ? "on" : ""} onClick={() => setSid(s.id)}>
-                    {s.label}
+                {preset.scenarios.map((x) => (
+                  <button
+                    key={x.id}
+                    className={sid === x.id ? "on" : ""}
+                    onClick={() => {
+                      setAuto(false);
+                      setSid(x.id);
+                    }}
+                  >
+                    {x.label}
                   </button>
                 ))}
               </div>
-            </div>
-            <div className={`l-verdict ${atRisk ? "risk" : "ok"}`}>
-              <b>{atRisk ? "AT RISK" : "ALL CLEAR"}</b>
-              <span>
-                {result.reachableCount}/{result.totalCount} occupants can reach an eligible exit
-              </span>
             </div>
             <ul className="l-occ">
               {preset.building.occupants.map((o) => {
@@ -118,12 +142,11 @@ export function Landing() {
             </ul>
             <p className="l-explain">{result.explanations.find((e) => /cannot|no /.test(e)) ?? "Every occupant has a graph route to an eligible exit."}</p>
             <a className="l-btn l-btn-primary l-block" href={`/lab?b=${bid}&autoplay=1`}>
-              Let the agents fix it →
+              Let Argon fix it →
             </a>
-            <p className="l-muted small">Fictional buildings · illustrative scenarios</p>
           </aside>
         </div>
-      </section>
+      </header>
 
       <section className="l-how" id="how">
         <div className="l-section-head">
@@ -133,23 +156,23 @@ export function Landing() {
         <div className="l-cards">
           <article>
             <i className="dot red" />
-            <h3>Attacker</h3>
-            <p>Gemini studies the graph and previous results, then blocks the door, stair or lift most likely to strand someone. Lift recall in a fire alarm is modelled.</p>
+            <h3>Attacker · Gemini 4 Argon</h3>
+            <p>Argon reads the whole building graph and every previous result, then picks the door, stair or lift whose failure is most likely to trap someone. Fire-alarm lift recall is modelled.</p>
           </article>
           <article>
             <i className="dot blue" />
-            <h3>Defender</h3>
-            <p>Gemini proposes one change within your budget and design constraints: a corridor, a stair, an evacuation lift or secondary power.</p>
+            <h3>Defender · Argon + Flash</h3>
+            <p>Argon designs headline fixes, from a new corridor to an evacuation lift serving every floor. Gemini 3.8 Flash subagents mop up the many small follow-ups fast. Rejected? It reads the judge’s reasons and tries again.</p>
           </article>
           <article>
             <i className="dot green" />
-            <h3>Judge</h3>
-            <p>A deterministic graph engine re-solves the failure and every stored regression. If the fix doesn’t work, it’s rejected with reasons and the defender tries again.</p>
+            <h3>Judge · deterministic engine</h3>
+            <p>Graph maths, not opinion. It re-solves the failure and every past failure, then sweeps every combination exhaustively. Nothing is accepted until it is proven, and big spends wait for your approval.</p>
           </article>
           <article>
             <i className="dot amber" />
-            <h3>Cost model</h3>
-            <p>Every proposal is re-priced from current UK rates pulled live with Gemini + Google Search, with sources, instead of trusting the AI’s own number.</p>
+            <h3>Cost model · Search grounding</h3>
+            <p>Every proposal is re-priced from current UK rates fetched live by Gemini with Google Search, with sources, instead of trusting the AI’s own number.</p>
           </article>
         </div>
         <div className="l-steps">
@@ -174,7 +197,7 @@ export function Landing() {
         <ul>
           <li>
             <b>Independent</b>
-            <span>Gemini never marks its own work. Every verdict comes from a deterministic engine with 24 automated tests.</span>
+            <span>Gemini never marks its own work. Every verdict comes from a deterministic engine with 30+ automated tests.</span>
           </li>
           <li>
             <b>Repeatable</b>
@@ -192,7 +215,7 @@ export function Landing() {
       </section>
 
       <section className="l-final">
-        <h2>Stress-test a building in under a minute.</h2>
+        <h2>From floor plan to fault-free in under three minutes.</h2>
         <div className="l-ctas">
           <a className="l-btn l-btn-primary" href={`/lab?b=${bid}&autoplay=1`}>
             Run the live demo
@@ -209,7 +232,7 @@ export function Landing() {
             <span className="mark" />
             ExitZero
           </a>
-          <p>Adversarial building resilience lab · Gemini Halloween Hackathon · demo version</p>
+          <p>Adversarial building resilience lab · built with Gemini 4 Argon at Google DeepMind’s Halloween at Imperial · demo version</p>
         </div>
         <p className="l-muted small">
           Decision support for early design conversations. Not a fire risk assessment, building-regulations check or certified evacuation model. Buildings shown are fictional.

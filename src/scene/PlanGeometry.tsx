@@ -14,7 +14,7 @@ type Props = {
   building: Building;
   exploded: boolean;
   strandedNodeIds: Set<string>;
-  showLabels: boolean;
+  labelMode: "all" | "minimal" | "none";
 };
 
 const SLAB = 0.32;
@@ -22,7 +22,7 @@ const WALL_T = 0.14;
 const EXT_T = 0.3;
 
 /** Architectural model of every floor: slab with voids, finishes, walls with door gaps, glazing and exits. */
-export function PlanGeometry({ plan, building, exploded, strandedNodeIds, showLabels }: Props) {
+export function PlanGeometry({ plan, building, exploded, strandedNodeIds, labelMode }: Props) {
   const connectionIds = useMemo(() => new Set(building.connections.map((c) => c.id)), [building]);
   return (
     <group>
@@ -34,7 +34,7 @@ export function PlanGeometry({ plan, building, exploded, strandedNodeIds, showLa
           wallHeight={plan.wallHeight}
           activeConnections={connectionIds}
           strandedNodeIds={strandedNodeIds}
-          showLabels={showLabels}
+          labelMode={labelMode}
           exploded={exploded}
         />
       ))}
@@ -48,7 +48,7 @@ function Floor({
   wallHeight,
   activeConnections,
   strandedNodeIds,
-  showLabels,
+  labelMode,
   exploded,
 }: {
   floor: FloorPlan;
@@ -56,9 +56,10 @@ function Floor({
   wallHeight: number;
   activeConnections: Set<string>;
   strandedNodeIds: Set<string>;
-  showLabels: boolean;
+  labelMode: "all" | "minimal" | "none";
   exploded: boolean;
 }) {
+  const showLabels = labelMode !== "none";
   const slab = useMemo(() => slabGeometry(floor), [floor]);
   const walls = useMemo(() => buildWalls(floor, activeConnections), [floor, activeConnections]);
   const [fx0, fz0, , fz1] = floor.footprint;
@@ -102,7 +103,7 @@ function Floor({
         ))}
       {showLabels &&
         floor.spaces
-          .filter((s) => s.kind !== "void" && s.kind !== "stair")
+          .filter((s) => s.kind !== "void" && s.kind !== "stair" && (labelMode === "all" || (s.nodeId && s.kind === "room")))
           .map((s) => {
             const [x0, z0, x1, z1] = s.rect;
             const big = !!s.nodeId;

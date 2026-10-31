@@ -14,9 +14,11 @@ export type CostRates = {
     rampPerMetre: number;
     clearObstruction: number;
     liftSecondaryPower: number;
+    liftExtraStop: number;
   };
   sources: { title: string; url: string }[];
   notes?: string;
+  model?: string;
 };
 
 export type RateKey = keyof CostRates["rates"];
@@ -31,6 +33,7 @@ export const RATE_BOUNDS: Record<RateKey, [number, number]> = {
   rampPerMetre: [300, 6000],
   clearObstruction: [200, 15000],
   liftSecondaryPower: [5000, 120000],
+  liftExtraStop: [3000, 60000],
 };
 
 /** Indicative placeholder rates used when no live pricing is available. Not a quotation. */
@@ -47,6 +50,7 @@ export const DEFAULT_RATES: CostRates = {
     rampPerMetre: 1200,
     clearObstruction: 2500,
     liftSecondaryPower: 25000,
+    liftExtraStop: 12000,
   },
   sources: [],
   notes: "Built-in indicative rates for a hackathon demo. Not a quotation.",
@@ -61,6 +65,7 @@ export const RATE_LABELS: Record<RateKey, string> = {
   rampPerMetre: "Ramp (per m)",
   clearObstruction: "Clear / re-hang obstructed door",
   liftSecondaryPower: "Upgrade lift: secondary power + evac controls",
+  liftExtraStop: "Each extra lift stop / landing door",
 };
 
 export type CostLine = { label: string; qty: number; unit: string; rate: number; total: number };
@@ -82,6 +87,20 @@ export function priceRepair(repair: Repair, building: Building, rates: CostRates
     else if (kind === "ramp") line(RATE_LABELS.rampPerMetre, round1(c.length), "m", r.rampPerMetre);
     else line(RATE_LABELS.corridorPerMetre, round1(c.length), "m", r.corridorPerMetre);
     line(RATE_LABELS.doorOpening, 2, "nr", r.doorOpening);
+  } else if (repair.kind === "add_connections") {
+    const cs = repair.connections;
+    if (cs.length && cs.every((c) => c.kind === "lift")) {
+      // One lift serving several floors: one installation plus a landing per extra stop.
+      const evac = cs.some((c) => c.evacuationLift);
+      line(evac ? RATE_LABELS.evacuationLift : RATE_LABELS.passengerLift, 1, "item", evac ? r.evacuationLift : r.passengerLift);
+      const stops = new Set(cs.flatMap((c) => [c.from, c.to])).size;
+      if (stops > 2) line(RATE_LABELS.liftExtraStop, stops - 2, "nr", r.liftExtraStop);
+    } else {
+      for (const c of cs) {
+        const sub = priceRepair({ kind: "add_connection", connection: c, cost: 0 }, building, rates);
+        for (const l of sub.lines) line(`${c.id}: ${l.label}`, l.qty, l.unit, l.rate);
+      }
+    }
   } else {
     const c = building.connections.find((x) => x.id === repair.connectionId);
     if (c?.kind === "lift") line(RATE_LABELS.liftSecondaryPower, 1, "item", r.liftSecondaryPower);
@@ -94,9 +113,7 @@ export function priceRepair(repair: Repair, building: Building, rates: CostRates
 export function withModelledCost(repair: Repair, building: Building, rates: CostRates): { repair: Repair; estimate: CostEstimate } {
   const estimate = priceRepair(repair, building, rates);
   const priced: Repair =
-    repair.kind === "add_connection"
-      ? { ...repair, cost: estimate.total, connection: { ...repair.connection, costToAdd: estimate.total } }
-      : { ...repair, cost: estimate.total };
+    repair.kind === "add_connection" ? { ...repair, cost: estimate.total, connection: { ...repair.connection, costToAdd: estimate.total } } : { ...repair, cost: estimate.total };
   return { repair: priced, estimate };
 }
 

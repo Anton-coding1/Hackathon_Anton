@@ -6,6 +6,7 @@ import type { Scenario, TestResult } from "@/contracts/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const maxDuration = 60;
 
 type Ok = { success: true; data: unknown; source: "gemini" };
 type Err = { success: false; error: string; code?: string };
@@ -13,8 +14,8 @@ type Err = { success: false; error: string; code?: string };
 const fail = (error: string, status = 400, code?: string) => NextResponse.json<Err>({ success: false, error, code }, { status });
 
 export async function GET() {
-  const { configured, model } = geminiConfig();
-  return NextResponse.json({ success: true, data: { configured, model } });
+  const { configured, model, fastModel } = geminiConfig();
+  return NextResponse.json({ success: true, data: { configured, model, fastModel } });
 }
 
 /**
@@ -45,8 +46,9 @@ export async function POST(req: Request) {
         if (s.ok) prior.push({ scenario: s.value, result: simulate(building, s.value) });
       }
       const maxBlocked = body.maxBlocked === 1 ? 1 : 2;
-      const proposal = await suggestAttack(building, prior, maxBlocked);
-      return NextResponse.json<Ok>({ success: true, data: proposal, source: "gemini" });
+      const tier = body.tier === "fast" ? "fast" : "lead";
+      const proposal = await suggestAttack(building, prior, maxBlocked, tier);
+      return NextResponse.json<Ok>({ success: true, data: { ...proposal, model: tier === "fast" ? geminiConfig().fastModel : geminiConfig().model }, source: "gemini" });
     }
 
     if (body.action === "defend") {
@@ -70,8 +72,9 @@ export async function POST(req: Request) {
             ? Object.fromEntries(Object.entries(rawC.rates as Record<string, unknown>).filter(([, v]) => typeof v === "number" && Number.isFinite(v)).slice(0, 12)) as Record<string, number>
             : undefined,
       };
-      const proposal = await suggestRepair(building, s.value, result, budget, feedback, constraints);
-      return NextResponse.json<Ok>({ success: true, data: proposal, source: "gemini" });
+      const tier = body.tier === "fast" ? "fast" : "lead";
+      const proposal = await suggestRepair(building, s.value, result, budget, feedback, constraints, tier);
+      return NextResponse.json<Ok>({ success: true, data: { ...proposal, model: tier === "fast" ? geminiConfig().fastModel : geminiConfig().model }, source: "gemini" });
     }
 
     return fail('action must be "attack" or "defend".');

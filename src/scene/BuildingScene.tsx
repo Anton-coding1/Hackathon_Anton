@@ -39,6 +39,8 @@ export type BuildingSceneProps = {
   heat?: Record<string, number>;
   exploded?: boolean;
   showLabels?: boolean;
+  /** "minimal": key rooms, blocked/new links and stranded people only. Overrides showLabels. */
+  labelMode?: "all" | "minimal" | "none";
   cameraResetKey?: number;
   /** Share of the canvas width actually visible (e.g. 0.6 when side panels overlap it), and a target nudge. */
   framing?: { visibleFraction: number; offset: [number, number, number] };
@@ -51,11 +53,11 @@ export function BuildingScene(props: BuildingSceneProps): React.ReactElement {
         shadows
         dpr={[1, 2]}
         gl={{ antialias: false, powerPreference: "high-performance", toneMapping: THREE.ACESFilmicToneMapping, toneMappingExposure: 1.05 }}
-        camera={{ position: [60, 52, 70], fov: 32, near: 0.5, far: 500 }}
+        camera={{ position: [70, 60, 80], fov: 32, near: 0.5, far: 800 }}
         onPointerMissed={() => (document.body.style.cursor = "")}
       >
         <color attach="background" args={[COLORS.background]} />
-        <fog attach="fog" args={[COLORS.background, 90, 200]} />
+        <fog attach="fog" args={[COLORS.background, 120, 320]} />
         <Suspense fallback={null}>
           <SceneContents {...props} />
         </Suspense>
@@ -81,9 +83,11 @@ function SceneContents({
   heat,
   exploded = true,
   showLabels = true,
+  labelMode,
   cameraResetKey = 0,
   framing,
 }: BuildingSceneProps) {
+  const mode = labelMode ?? (showLabels ? "all" : "none");
   const [hovered, setHovered] = useState<string | null>(null);
   const plan = useMemo(() => planProp ?? autoPlan(building), [planProp, building]);
   const nodes = useMemo(() => nodeMap(building), [building]);
@@ -99,8 +103,10 @@ function SceneContents({
   const span = useMemo(() => {
     const xs = plan.floors.flatMap((f) => [f.footprint[0], f.footprint[2]]);
     const zs = plan.floors.flatMap((f) => [f.footprint[1], f.footprint[3]]);
-    return Math.max(Math.max(...xs) - Math.min(...xs), (Math.max(...zs) - Math.min(...zs)) * 1.6, 12);
-  }, [plan]);
+    const tall = plan.floors.length * (exploded ? 9 : 4.5) * 1.15;
+    return Math.max(Math.max(...xs) - Math.min(...xs), (Math.max(...zs) - Math.min(...zs)) * 1.6, tall, 12);
+  }, [plan, exploded]);
+  const topY = useMemo(() => Math.max(...plan.floors.map((f) => levelY(f.floor, exploded))), [plan, exploded]);
   const polylines = useMemo(() => {
     // Parallel links between the same two spaces are drawn side by side, not on top of each other.
     const seen = new Map<string, number>();
@@ -142,29 +148,29 @@ function SceneContents({
 
   return (
     <>
-      <CameraRig centre={centre} resetKey={cameraResetKey} exploded={exploded} span={span} framing={framing} />
+      <CameraRig centre={centre} resetKey={cameraResetKey} exploded={exploded} span={span} framing={framing} lift={topY / 2} />
       <hemisphereLight args={["#ffffff", "#c9d2de", 0.9]} />
       <ambientLight intensity={0.25} />
       <directionalLight
-        position={[centre.x + 22, 38, centre.z + 18]}
+        position={[centre.x + 26, 60, centre.z + 22]}
         intensity={2.1}
         color="#fffaf2"
         castShadow
         shadow-mapSize={[2048, 2048]}
         shadow-bias={-0.0004}
         shadow-normalBias={0.03}
-        shadow-camera-left={-34}
-        shadow-camera-right={34}
-        shadow-camera-top={30}
-        shadow-camera-bottom={-30}
+        shadow-camera-left={-40}
+        shadow-camera-right={40}
+        shadow-camera-top={45}
+        shadow-camera-bottom={-40}
         shadow-camera-near={1}
-        shadow-camera-far={120}
+        shadow-camera-far={220}
       >
         <object3D attach="target" position={[centre.x, 0, centre.z]} />
       </directionalLight>
 
       <Site centre={centre} plan={plan} />
-      <PlanGeometry plan={plan} building={building} exploded={exploded} strandedNodeIds={strandedNodes} showLabels={showLabels} />
+      <PlanGeometry plan={plan} building={building} exploded={exploded} strandedNodeIds={strandedNodes} labelMode={mode} />
 
       {building.connections.map((c) => (
         <ConnectionVisual
@@ -173,7 +179,7 @@ function SceneContents({
           points={polylines.get(c.id) ?? []}
           state={connectionState(c, blocked, routed, added, selectedConnectionId, hovered)}
           isNew={added.has(c.id)}
-          showLabel={showLabels}
+          showLabel={mode === "all" || (mode === "minimal" && (blocked.has(c.id) || added.has(c.id) || hovered === c.id))}
           heat={heat?.[c.id]}
           onClick={onConnectionClick}
           onHover={setHovered}
@@ -184,7 +190,7 @@ function SceneContents({
         <ProposalVisual connection={proposal.connection} points={proposalPoints} status={proposal.status} />
       )}
 
-      <FlowVisual streams={streams} showLabels={showLabels} />
+      <FlowVisual streams={streams} labelMode={mode} />
       <ScanSweep activity={activity} centre={centre} exploded={exploded} />
     </>
   );
@@ -238,7 +244,9 @@ function CameraRig({
   exploded,
   span,
   framing,
+  lift = 0,
 }: {
+  lift?: number;
   centre: THREE.Vector3;
   resetKey: number;
   exploded: boolean;
@@ -254,14 +262,17 @@ function CameraRig({
   const off = framing?.offset ?? [0, 0, 0];
   const goalPos = useMemo(() => {
     const dir = new THREE.Vector3(0.53, exploded ? 0.6 : 0.52, 0.62).normalize();
-    return new THREE.Vector3(centre.x + off[0], 0, centre.z + off[2]).addScaledVector(dir, dist);
-  }, [centre, dist, exploded, off[0], off[2]]);
-  const goalTarget = useMemo(() => new THREE.Vector3(centre.x + off[0], (exploded ? 2.5 : 1) + off[1], centre.z + off[2]), [centre, exploded, off[0], off[1], off[2]]);
+    return new THREE.Vector3(centre.x + off[0], lift * 0.85, centre.z + off[2]).addScaledVector(dir, dist);
+  }, [centre, dist, exploded, lift, off[0], off[2]]);
+  const goalTarget = useMemo(
+    () => new THREE.Vector3(centre.x + off[0], Math.max(exploded ? 2.5 : 1, lift * 0.85) + off[1], centre.z + off[2]),
+    [centre, exploded, lift, off[0], off[1], off[2]],
+  );
   const narrow = size.width < 900;
 
   useEffect(() => {
     flying.current = true;
-  }, [resetKey, exploded, narrow]);
+  }, [resetKey, exploded, narrow, fraction]);
 
   useFrame((_, dt) => {
     if (!flying.current || !controls.current) return;
@@ -279,7 +290,7 @@ function CameraRig({
       enableDamping
       dampingFactor={0.08}
       minDistance={12}
-      maxDistance={140}
+      maxDistance={220}
       maxPolarAngle={Math.PI * 0.46}
       onStart={() => (flying.current = false)}
     />

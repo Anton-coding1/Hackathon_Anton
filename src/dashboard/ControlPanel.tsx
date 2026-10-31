@@ -49,19 +49,19 @@ export function ControlPanel({
           <span className="btn-icon">{c.autopilot ? "■" : "▶"}</span>
           <span>
             {c.autopilot ? "Stop autopilot" : "Run autopilot"}
-            <small>{c.gemini.configured ? `Gemini ${c.gemini.model} · attack → repair → judge` : "deterministic agents · add a Gemini key to use Gemini"}</small>
+            <small>{c.gemini.configured ? "Gemini 4 Argon leads · Flash subagents follow up" : "built-in agents · add a Gemini key to use Argon"}</small>
           </span>
         </button>
         <div className="agents">
           <div className={`agent a-att ${role("attacker")}`}>
             <i />
             <b>Attacker</b>
-            <span>{c.gemini.configured ? "Gemini" : "search"}</span>
+            <span>{c.gemini.configured ? "Argon" : "search"}</span>
           </div>
           <div className={`agent a-def ${role("defender")}`}>
             <i />
             <b>Defender</b>
-            <span>{c.gemini.configured ? "Gemini" : "search"}</span>
+            <span>{c.gemini.configured ? "Argon + Flash" : "search"}</span>
           </div>
           <div className={`agent a-jud ${role("judge")}`}>
             <i />
@@ -73,7 +73,7 @@ export function ControlPanel({
 
       <section className="stress">
         <div className="sec-head">
-          <h3>Live stress test</h3>
+          <h3>Stress test {stress.done ? <span className="tag-done">complete</span> : <span className="tag-run">running</span>}</h3>
           <label className="switch">
             <input type="checkbox" checked={stressOn} onChange={(e) => setStressOn(e.target.checked)} />
             <span />
@@ -81,12 +81,14 @@ export function ControlPanel({
         </div>
         <div className="kpi">
           <b>{fmt(stress.evaluated)}</b>
-          <span>failure scenarios evaluated</span>
+          <span>
+            of {stress.target.toLocaleString("en-GB")} random failure scenarios{stress.done ? ` · ${stress.seconds.toFixed(1)} s` : ""}
+          </span>
         </div>
         <div className="kpi-row">
           <div>
-            <b>{fmt(stress.perSecond)}</b>
-            <span>per second</span>
+            <b>{fmt(stress.done ? Math.round(stress.evaluated / Math.max(stress.seconds, 0.001)) : stress.perSecond)}</b>
+            <span>{stress.done ? "avg / second" : "per second"}</span>
           </div>
           <div>
             <b className={failPct > 0 ? "bad" : "good"}>{failPct.toFixed(1)}%</b>
@@ -97,7 +99,7 @@ export function ControlPanel({
             <span>failure modes</span>
           </div>
         </div>
-        <p className="hint">Random 1–3 link failures, each solved by the deterministic engine. Restarts on every verified change.</p>
+        <p className="hint">Random 1–3 link failures, each solved by the engine. Runs once per design and again after every verified change.</p>
       </section>
 
       <section>
@@ -116,11 +118,22 @@ export function ControlPanel({
             onChange={(e) => setConstraints({ ...constraints, budget: Number(e.target.value) })}
           />
         </label>
+        <label className="field" style={{ marginTop: 10 }}>
+          <span>
+            Ask me before any change over <b>£{constraints.approveOver.toLocaleString("en-GB")}</b>
+          </span>
+          <input type="range" min={0} max={200000} step={5000} value={constraints.approveOver} disabled={c.busy} onChange={(e) => setConstraints({ ...constraints, approveOver: Number(e.target.value) })} />
+        </label>
         <div className="field" style={{ marginTop: 10 }}>
           <span>Resilience target</span>
           <div className="seg">
             {([1, 2] as const).map((t) => (
-              <button key={t} className={constraints.tolerance === t ? "on" : ""} disabled={c.busy} onClick={() => setConstraints({ ...constraints, tolerance: t })}>
+              <button
+                key={t}
+                className={constraints.tolerance === t ? "on" : ""}
+                disabled={c.busy || (t === 2 && c.building.connections.length > 45)}
+                title={t === 2 && c.building.connections.length > 45 ? "Too many combinations to check live for a building this size" : undefined}
+                onClick={() => setConstraints({ ...constraints, tolerance: t })}>
                 Any {t} failure{t > 1 ? "s" : ""}
               </button>
             ))}
@@ -187,11 +200,11 @@ export function ControlPanel({
           </button>
         </div>
         <div className="seg">
-          <button className={labels ? "on" : ""} onClick={() => setLabels(true)}>
-            Labels
-          </button>
           <button className={!labels ? "on" : ""} onClick={() => setLabels(false)}>
-            Clean
+            Key labels
+          </button>
+          <button className={labels ? "on" : ""} onClick={() => setLabels(true)}>
+            All labels
           </button>
         </div>
         <button className="link" onClick={c.resetCamera}>

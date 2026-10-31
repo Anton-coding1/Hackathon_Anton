@@ -67,6 +67,7 @@ export function ResultsPanel({ c, stress, onDownload }: { c: DemoController; str
         <header>
           <span className="role r-def">Proposed change</span>
           <SourceBadge source={c.proposal?.source} />
+          {c.proposal?.model && <span className="attempt">{/argon/i.test(c.proposal.model) ? "Argon" : "Flash"}</span>}
           {c.proposal && <span className="attempt">attempt {c.proposal.attempt}</span>}
         </header>
         {c.phase === "defending" ? (

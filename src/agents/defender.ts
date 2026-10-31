@@ -1,6 +1,6 @@
 import "server-only";
 import type { Building, Repair, Scenario, TestResult } from "@/contracts/types";
-import { AgentError, generateJson } from "./gemini";
+import { AgentError, generateJson, type Tier } from "./gemini";
 import { DEFENDER_SYSTEM, defenderPrompt, REPAIR_SCHEMA } from "./prompts";
 import { parseJson, validateRepairShape } from "./validation";
 
@@ -19,12 +19,13 @@ export async function suggestRepair(
   budget: number,
   feedback: AuditFeedback[] = [],
   constraints?: { allowed?: string[]; rates?: Record<string, number> },
+  tier: Tier = "lead",
 ): Promise<RepairProposal> {
   const base = defenderPrompt(building, scenario, result, budget, feedback, constraints);
   let prompt = base;
   let lastError = "";
   for (let attempt = 1; attempt <= 2; attempt++) {
-    const text = await generateJson(DEFENDER_SYSTEM, prompt, REPAIR_SCHEMA);
+    const text = await generateJson(DEFENDER_SYSTEM, prompt, REPAIR_SCHEMA, tier);
     const parsed = parseJson(text);
     const checked = parsed.ok ? validateRepairShape(parsed.value, building, scenario, budget) : parsed;
     if (checked.ok) {

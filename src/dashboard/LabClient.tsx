@@ -7,7 +7,7 @@ import { buildingIssues } from "@/engine";
 import { Dashboard } from "./Dashboard";
 
 export function LabClient({ presetId, autoplay }: { presetId: string; autoplay: boolean }) {
-  const [preset, setPreset] = useState<BuildingPreset | null>(presetId === "custom" ? null : (PRESETS[presetId as "clinic" | "industrial"] ?? PRESETS.clinic));
+  const [preset, setPreset] = useState<BuildingPreset | null>(presetId === "custom" ? null : (PRESETS[presetId as keyof typeof PRESETS] ?? PRESETS.tower));
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {

@@ -46,7 +46,8 @@ export function auditRepair(
   }
 
   // 2. Apply to copies only.
-  const repairedBuilding = repair.kind === "add_connection" ? withConnection(building, repair.connection) : building;
+  const repairedBuilding =
+    repair.kind === "add_connection" ? withConnection(building, repair.connection) : repair.kind === "add_connections" ? withConnections(building, repair.connections) : building;
   const repairedScenario: Scenario =
     repair.kind === "unblock_connection"
       ? { ...scenario, blockedConnectionIds: scenario.blockedConnectionIds.filter((id) => id !== repair.connectionId) }
@@ -57,7 +58,12 @@ export function auditRepair(
   // 3. Did it fix the target failure (strict: every stranded occupant must be restored)?
   const stillStranded = before.unreachableOccupantIds.filter((id) => after.unreachableOccupantIds.includes(id));
   const newlyStranded = after.unreachableOccupantIds.filter((id) => !before.unreachableOccupantIds.includes(id));
-  const what = repair.kind === "add_connection" ? `proposed connection ${repair.connection.id}` : `unblocking ${repair.connectionId}`;
+  const what =
+    repair.kind === "add_connection"
+      ? `proposed connection ${repair.connection.id}`
+      : repair.kind === "add_connections"
+        ? `proposed ${repair.label ?? `change (${repair.connections.map((c) => c.id).join(", ")})`}`
+        : `unblocking ${repair.connectionId}`;
   if (stillStranded.length > 0) {
     reasons.push(`Rejected: the ${what} does not restore an eligible route for ${stillStranded.join(", ")}.`);
   }
@@ -115,6 +121,18 @@ export function validateRepair(building: Building, scenario: Scenario, repair: R
   if (typeof repair.cost !== "number" || !Number.isFinite(repair.cost) || repair.cost < 0) {
     problems.push("the cost must be a finite, non-negative number.");
   }
+  if (repair.kind === "add_connections") {
+    if (!Array.isArray(repair.connections) || repair.connections.length === 0 || repair.connections.length > 40) {
+      return [...problems, "add_connections needs between 1 and 40 connections."];
+    }
+    let b = building;
+    for (const c of repair.connections) {
+      const sub = validateRepair(b, scenario, { kind: "add_connection", connection: c, cost: 0 });
+      problems.push(...sub);
+      if (sub.length === 0) b = withConnection(b, c);
+    }
+    return problems;
+  }
   if (repair.kind === "add_connection") {
     const c = repair.connection;
     if (!c || typeof c !== "object") return [...problems, "add_connection needs a connection object."];
@@ -150,6 +168,13 @@ export function validateRepair(building: Building, scenario: Scenario, repair: R
   return problems;
 }
 
+/** Returns a copy of the building with several extra connections. */
+export function withConnections(building: Building, connections: Building["connections"]): Building {
+  const copy = cloneBuilding(building);
+  copy.connections.push(...connections.map((c) => ({ ...c })));
+  return copy;
+}
+
 /** Returns a copy of the building with one extra connection. */
 export function withConnection(building: Building, connection: Building["connections"][number]): Building {
   const copy = cloneBuilding(building);
@@ -159,4 +184,14 @@ export function withConnection(building: Building, connection: Building["connect
 
 function fmt(n: number): string {
   return Number.isFinite(n) ? n.toLocaleString("en-GB") : String(n);
+}
+
+/** Connections a repair adds (empty for an unblock). */
+export function addedConnections(r: Repair): Building["connections"] {
+  return r.kind === "add_connection" ? [r.connection] : r.kind === "add_connections" ? r.connections : [];
+}
+
+/** A short stable reference for a repair (connection id, bundle label or reopened id). */
+export function repairRef(r: Repair): string {
+  return r.kind === "add_connection" ? r.connection.id : r.kind === "add_connections" ? r.connections[0]?.id ?? "BUNDLE" : r.connectionId;
 }

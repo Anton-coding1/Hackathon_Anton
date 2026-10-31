@@ -57,6 +57,13 @@ export type Repair =
       kind: "unblock_connection";
       connectionId: string;
       cost: number;
+    }
+  /** Optional, additive (v1.1): several connections built as one change, e.g. an evacuation lift serving every floor. */
+  | {
+      kind: "add_connections";
+      connections: Connection[];
+      cost: number;
+      label?: string;
     };
 
 export type TestResult = {
