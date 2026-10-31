@@ -3,7 +3,8 @@
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { PRESETS } from "@/data/buildings";
-import { simulate } from "@/engine";
+import { certify, describeBlocked, simulate } from "@/engine";
+import type { Scenario } from "@/contracts/types";
 import { UploadPanel } from "./UploadPanel";
 import "./landing.css";
 
@@ -13,20 +14,42 @@ const BuildingScene = dynamic(() => import("@/scene/BuildingScene").then((m) => 
 });
 
 export function Landing() {
-  const [bid, setBid] = useState<"tower" | "hospital" | "industrial" | "clinic">("tower");
+  const bid = "tower" as const;
   const preset = PRESETS[bid];
-  const [sid, setSid] = useState("base");
-  const [auto, setAuto] = useState(true);
-  // The hero plays by itself until someone touches it.
+  const b = preset.building;
+  const lifts = useMemo(() => b.connections.filter((c) => c.kind === "lift" && !c.evacuationLift).map((c) => c.id), [b]);
+  const alarmScenario: Scenario = useMemo(() => ({ id: "FIRE_ALARM", name: "Fire alarm", blockedConnectionIds: lifts }), [lifts]);
+  const alarmResult = useMemo(() => simulate(b, alarmScenario), [b, alarmScenario]);
+  // A deterministic sample of the sweep: every scenario that traps someone extra, plus some that don't.
+  const sample = useMemo(() => {
+    const all = certify(b, 1, lifts, { collectAll: true, skipEvacuationLifts: true }).all ?? [];
+    const base = new Set(alarmResult.unreachableOccupantIds);
+    const tagged = all.map((it) => ({ ...it, extra: it.result.unreachableOccupantIds.filter((id) => !base.has(id)) }));
+    const bad = tagged.filter((t) => t.extra.length);
+    const good = tagged.filter((t) => !t.extra.length).filter((_, k) => k % 6 === 0);
+    const out: typeof tagged = [];
+    for (let k = 0; k < Math.max(bad.length, good.length); k++) {
+      if (good[k]) out.push(good[k]);
+      if (bad[k]) out.push(bad[k]);
+    }
+    return { items: out.slice(0, 22), total: all.length, badTotal: bad.length };
+  }, [b, lifts, alarmResult]);
+
+  const [step, setStep] = useState(0); // 0 normal · 1 alarm · 2..n sweep · last verdict
+  const last = sample.items.length + 2;
   useEffect(() => {
-    if (!auto) return;
-    const ids = preset.scenarios.map((x) => x.id);
-    const t = setInterval(() => setSid((cur) => ids[(ids.indexOf(cur) + 1) % ids.length]), 4200);
-    return () => clearInterval(t);
-  }, [auto, preset]);
-  const sc = preset.scenarios.find((s) => s.id === sid) ?? preset.scenarios[0];
-  const result = useMemo(() => simulate(preset.building, sc.scenario), [preset, sc]);
+    const ms = step === 0 ? 3200 : step === 1 ? 2800 : step === last ? 5200 : 520;
+    const t = setTimeout(() => setStep((x) => (x >= last ? 0 : x + 1)), ms);
+    return () => clearTimeout(t);
+  }, [step, last]);
+
+  const phase = step === 0 ? "normal" : step === 1 ? "alarm" : step === last ? "verdict" : "sweep";
+  const current = phase === "sweep" ? sample.items[step - 2] : null;
+  const shownScenario = phase === "normal" ? { id: "BASE", name: "Normal day", blockedConnectionIds: [] } : current?.scenario ?? alarmScenario;
+  const result = useMemo(() => (current ? current.result : simulate(b, shownScenario)), [b, current, shownScenario]);
+  const ticker = phase === "sweep" || phase === "verdict" ? sample.items.slice(Math.max(0, Math.min(step - 2, sample.items.length) - 5), Math.min(step - 1, sample.items.length)) : [];
   const atRisk = result.unreachableOccupantIds.length > 0;
+  const nameOf = (id: string) => b.occupants.find((o) => o.id === id)?.label.toLowerCase() ?? id;
 
   return (
     <div className="landing">
@@ -81,69 +104,47 @@ export function Landing() {
 
         <div className="l-demo-card l-hero-card">
           <div className="l-demo-scene">
-            <BuildingScene building={preset.building} scenario={sc.scenario} result={result} plan={preset.plan} labelMode="minimal" exploded={preset.defaultExploded ?? true} />
+            <BuildingScene building={b} scenario={shownScenario} result={result} plan={preset.plan} labelMode="minimal" exploded={preset.defaultExploded ?? true} />
             <div className={`l-verdict-float ${atRisk ? "risk" : "ok"}`}>
               <b>{atRisk ? "AT RISK" : "ALL CLEAR"}</b>
               <span>
                 {result.reachableCount}/{result.totalCount} can reach an eligible exit
               </span>
             </div>
-            <div className="l-scene-tag">{auto ? "Live · cycling scenarios" : "Live engine"} · every route solved in your browser</div>
+            {phase !== "normal" && <div className="l-fire">FIRE ALARM · LIFTS RECALLED</div>}
+            <div className="l-scene-tag">Live engine · every route solved in your browser</div>
           </div>
           <aside className="l-demo-side">
-            <div className="l-toggle-group">
-              <span>Building</span>
-              <div className="l-toggles">
-                {(["tower", "hospital", "industrial", "clinic"] as const).map((k) => (
-                  <button
-                    key={k}
-                    className={bid === k ? "on" : ""}
-                    onClick={() => {
-                      setBid(k);
-                      setSid("base");
-                    }}
-                  >
-                    {PRESETS[k].title}
-                  </button>
-                ))}
-              </div>
-              <p className="l-muted">{preset.sector}</p>
+            <div className={`l-phase ${phase}`}>
+              <span className="l-phase-dot" />
+              {phase === "normal" ? "Normal day" : phase === "alarm" ? "Fire alarm activated" : phase === "sweep" ? "AI agents testing every escape route" : "Verdict"}
             </div>
-            <div className="l-toggle-group">
-              <span>Scenario</span>
-              <div className="l-toggles">
-                {preset.scenarios.map((x) => (
-                  <button
-                    key={x.id}
-                    className={sid === x.id ? "on" : ""}
-                    onClick={() => {
-                      setAuto(false);
-                      setSid(x.id);
-                    }}
-                  >
-                    {x.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <ul className="l-occ">
-              {preset.building.occupants.map((o) => {
-                const stuck = result.unreachableOccupantIds.includes(o.id);
-                return (
-                  <li key={o.id}>
-                    <span>
-                      {o.label}
-                      {o.requiresStepFree ? <em>step-free</em> : null}
-                    </span>
-                    <b className={stuck ? "bad" : "good"}>{stuck ? "No route" : "Route OK"}</b>
-                  </li>
-                );
-              })}
+            <p className="l-explain">
+              {phase === "normal"
+                ? `${preset.title}: ${b.occupants.length} people tracked across ${new Set(b.nodes.map((n) => n.floor)).size} floors. Every route is open.`
+                : phase === "alarm"
+                  ? `Lifts are recalled. ${alarmResult.unreachableOccupantIds.length ? `The ${alarmResult.unreachableOccupantIds.map(nameOf).join(" and the ")} can't use stairs, so they're trapped before fire blocks anything.` : "Everyone can still use the stairs."}`
+                  : phase === "sweep"
+                    ? "Now fire blocks one path at a time. Is there another way out?"
+                    : `${sample.badTotal} of the ${sample.total} blocked-path scenarios trap someone else as well. Nobody had to guess which ones.`}
+            </p>
+            <ul className="l-ticker">
+              {ticker.map((t, k) => (
+                <li key={`${t.scenario.id}-${k}`} className={t.extra.length ? "bad" : "ok"}>
+                  <span>Fire blocks {describeBlocked(b, t.scenario.blockedConnectionIds.filter((id) => !lifts.includes(id)))}</span>
+                  <b>{t.extra.length ? `✕ ${t.extra.map(nameOf).join(", ")} trapped` : "✓ another way out"}</b>
+                </li>
+              ))}
             </ul>
-            <p className="l-explain">{result.explanations.find((e) => /cannot|no /.test(e)) ?? "Every occupant has a graph route to an eligible exit."}</p>
+            {phase === "sweep" && (
+              <div className="l-progress">
+                <i style={{ width: `${(100 * (step - 1)) / sample.items.length}%` }} />
+              </div>
+            )}
             <a className="l-btn l-btn-primary l-block" href={`/lab?b=${bid}&autoplay=1`}>
-              Let Argon fix it →
+              Watch the agents fix it →
             </a>
+            <p className="l-muted small">Fictional building · nobody chooses the blocked paths, the agents test them all</p>
           </aside>
         </div>
       </header>

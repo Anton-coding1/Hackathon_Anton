@@ -426,3 +426,26 @@ button { font: inherit; color: inherit; }
 .hud-dot.phase-approval { background: var(--warn); }
 
 .bsel { border: 1px solid var(--line); background: var(--surface-2); border-radius: 6px; padding: 3px 6px; font: inherit; font-size: 13px; color: var(--text); cursor: pointer; }
+
+/* fire flow */
+.btn-fire { background: #dc2626; border-color: #dc2626; color: #fff; padding: 11px 12px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.1), 0 6px 18px rgba(220, 38, 38, 0.3); }
+.btn-fire:hover:not(:disabled) { background: #b91c1c !important; }
+.btn-fire.is-running { background: #1d2939; border-color: #1d2939; box-shadow: none; }
+.btn-fire .btn-icon { background: rgba(255, 255, 255, 0.18); }
+.fire-banner, .normal-banner {
+  position: absolute; z-index: 13; top: 14px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px;
+  padding: 9px 16px; border-radius: 999px; font-weight: 600; font-size: 13px; white-space: nowrap;
+}
+.fire-banner { background: #dc2626; color: #fff; box-shadow: 0 8px 28px rgba(220, 38, 38, 0.4); animation: firePulse 1.6s infinite; }
+.fire-dot { width: 9px; height: 9px; border-radius: 50%; background: #fff; animation: blink 0.8s infinite; }
+@keyframes firePulse { 50% { box-shadow: 0 8px 40px rgba(220, 38, 38, 0.65); } }
+.normal-banner { background: rgba(255, 255, 255, 0.92); color: #067647; border: 1px solid #abefc6; }
+.normal-banner span { width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+.stage:not(.is-focus) .fire-banner, .stage:not(.is-focus) .normal-banner { top: 14px; }
+.hud-text strong.ok { color: var(--good); }
+.hud-text strong.bad { color: var(--bad); }
+.hud-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: var(--line); border-radius: 0 0 12px 12px; overflow: hidden; }
+.hud-progress i { display: block; height: 100%; background: var(--accent); transition: width 0.1s linear; }
+.adv { margin-top: 12px; }
+.adv summary { cursor: pointer; font-size: 12.5px; color: var(--muted); }
+.hud-dot.phase-alarm, .hud-dot.phase-sweeping { background: var(--bad); }

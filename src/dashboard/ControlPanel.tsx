@@ -42,14 +42,14 @@ export function ControlPanel({
       <section>
         <h3>AI agents</h3>
         <button
-          className={`btn btn-primary ${c.autopilot ? "is-running" : ""}`}
-          disabled={c.busy && !c.autopilot}
-          onClick={() => (c.autopilot ? c.reset() : c.setAutopilot(true))}
+          className={`btn btn-fire ${c.alarm ? "is-running" : ""}`}
+          disabled={c.busy && !c.alarm}
+          onClick={() => (c.alarm ? c.resetAll() : c.activateAlarm())}
         >
-          <span className="btn-icon">{c.autopilot ? "■" : "▶"}</span>
+          <span className="btn-icon">{c.alarm ? "■" : "🔔"}</span>
           <span>
-            {c.autopilot ? "Stop autopilot" : "Run autopilot"}
-            <small>{c.gemini.configured ? "Gemini 4 Argon leads · Flash subagents follow up" : "built-in agents · add a Gemini key to use Argon"}</small>
+            {c.alarm ? "Stop and reset" : "Activate fire alarm"}
+            <small>{c.gemini.configured ? "Gemini 4 Argon tests every escape route" : "AI agents test every escape route"}</small>
           </span>
         </button>
         <div className="agents">
@@ -124,6 +124,8 @@ export function ControlPanel({
           </span>
           <input type="range" min={0} max={200000} step={5000} value={constraints.approveOver} disabled={c.busy} onChange={(e) => setConstraints({ ...constraints, approveOver: Number(e.target.value) })} />
         </label>
+        <details className="adv">
+          <summary>Advanced</summary>
         <div className="field" style={{ marginTop: 10 }}>
           <span>Resilience target</span>
           <div className="seg">
@@ -147,7 +149,7 @@ export function ControlPanel({
             onChange={(e) => setConstraints({ ...constraints, liftsRecalled: e.target.checked })}
           />
           <span>
-            Assume lifts are recalled in an emergency
+            Lifts recalled even without an alarm
             <small>{hasLifts ? "Non-evacuation lifts become unusable in every scenario" : "No lifts in this building"}</small>
           </span>
         </label>
@@ -164,29 +166,7 @@ export function ControlPanel({
           ))}
         </div>
         <p className="hint">Repair types the defender may propose. The judge rejects anything outside them.</p>
-      </section>
-
-      <section>
-        <h3>Step through</h3>
-        <div className="step-grid">
-          <button className="btn btn-sm" disabled={c.busy} onClick={() => c.attack()}>
-            Attack
-          </button>
-          <button className="btn btn-sm" disabled={!canRedesign} onClick={() => c.redesign()}>
-            Redesign
-          </button>
-          <button className="btn btn-sm" disabled={!canVerify} onClick={() => c.verify()}>
-            Judge
-          </button>
-          <button className="btn btn-sm" onClick={() => c.reset()}>
-            Reset
-          </button>
-        </div>
-        {c.preset.scripted && (
-          <button className="btn btn-sm btn-quiet" disabled={c.busy} onClick={() => c.runSignatureDemo()}>
-            Scripted demo · guaranteed rejection
-          </button>
-        )}
+        </details>
       </section>
 
       <section>
@@ -210,7 +190,6 @@ export function ControlPanel({
         <button className="link" onClick={c.resetCamera}>
           Reset camera
         </button>
-        <p className="hint">Click any corridor or stair to block it manually; the engine re-solves instantly.</p>
       </section>
 
       <p className="disclaimer">Connectivity model of a fictional building. Not fire-safety software: no fire, smoke, crowd or evacuation-time modelling.</p>

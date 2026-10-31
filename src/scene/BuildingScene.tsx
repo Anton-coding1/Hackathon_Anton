@@ -103,8 +103,7 @@ function SceneContents({
   const span = useMemo(() => {
     const xs = plan.floors.flatMap((f) => [f.footprint[0], f.footprint[2]]);
     const zs = plan.floors.flatMap((f) => [f.footprint[1], f.footprint[3]]);
-    const tall = plan.floors.length * (exploded ? 9 : 4.5) * 1.15;
-    return Math.max(Math.max(...xs) - Math.min(...xs), (Math.max(...zs) - Math.min(...zs)) * 1.6, tall, 12);
+    return Math.max(Math.max(...xs) - Math.min(...xs), (Math.max(...zs) - Math.min(...zs)) * 1.6, 12);
   }, [plan, exploded]);
   const topY = useMemo(() => Math.max(...plan.floors.map((f) => levelY(f.floor, exploded))), [plan, exploded]);
   const polylines = useMemo(() => {
@@ -258,7 +257,11 @@ function CameraRig({
   const flying = useRef(true);
   const fraction = framing?.visibleFraction ?? 1;
   const aspect = (size.width * fraction) / Math.max(1, size.height);
-  const dist = (span * 1.0 * (aspect < 1.6 ? 1.6 / aspect : 1)) / Math.max(0.4, fraction) + (exploded ? 6 : 0);
+  // Fit the footprint across the visible width and the height (incl. upper floors) vertically.
+  const tanHalf = Math.tan(THREE.MathUtils.degToRad(32 / 2));
+  const distW = (span * 0.75) / (tanHalf * Math.max(0.6, aspect));
+  const distH = (lift * 1.1 + 4) / tanHalf;
+  const dist = Math.max(distW, distH, 30) * 1.05;
   const off = framing?.offset ?? [0, 0, 0];
   const goalPos = useMemo(() => {
     const dir = new THREE.Vector3(0.53, exploded ? 0.6 : 0.52, 0.62).normalize();

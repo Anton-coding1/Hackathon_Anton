@@ -5,3 +5,4 @@ export { auditRepair, validateRepair, withConnection, withConnections, addedConn
 export { resilienceFingerprint } from "./resilience";
 export type { Fingerprint } from "./resilience";
 export { EngineValidationError, buildingIssues, scenarioIssues } from "./graph";
+export { describeConnection, describeBlocked, occupantWeights } from "./describe";

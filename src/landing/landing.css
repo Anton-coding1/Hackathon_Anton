@@ -136,7 +136,7 @@
 .l-stats div { display: grid; gap: 2px; }
 .l-stats b { font-size: 28px; letter-spacing: -0.02em; }
 .l-stats span { color: var(--l-muted); font-size: 13px; }
-.l-hero-card { max-width: none; grid-template-columns: 1fr 360px; }
+.l-hero-card { max-width: none; width: 100%; margin: 0; grid-template-columns: minmax(0, 1fr) 360px; }
 .l-hero-card .l-demo-scene { min-height: 600px; }
 .l-verdict-float { position: absolute; z-index: 3; top: 16px; left: 16px; display: grid; gap: 2px; padding: 12px 16px; border-radius: 12px; background: rgba(255, 255, 255, 0.94); border: 1px solid #e4e7ec; box-shadow: 0 10px 30px rgba(16, 24, 40, 0.14); transition: all 0.3s; }
 .l-verdict-float b { font-size: 20px; letter-spacing: 0.06em; }
@@ -149,3 +149,19 @@
   .l-hero-card { grid-template-columns: 1fr; }
   .l-hero-card .l-demo-scene { min-height: 420px; }
 }
+
+.l-phase { display: inline-flex; align-items: center; gap: 8px; font-weight: 700; font-size: 15px; }
+.l-phase-dot { width: 9px; height: 9px; border-radius: 50%; background: #4ade80; }
+.l-phase.alarm .l-phase-dot, .l-phase.sweep .l-phase-dot { background: #f87171; animation: lblink 0.8s infinite; }
+.l-phase.verdict .l-phase-dot { background: #fbbf24; }
+@keyframes lblink { 50% { opacity: 0.25; } }
+.l-ticker { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; min-height: 180px; align-content: start; }
+.l-ticker li { display: grid; gap: 2px; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--l-line); font-size: 12.5px; animation: lin 0.3s ease-out; }
+.l-ticker li span { color: #c9ccd1; }
+.l-ticker li.ok b { color: #4ade80; font-weight: 600; }
+.l-ticker li.bad { border-color: #7f1d1d; background: #1f0a0a; }
+.l-ticker li.bad b { color: #f87171; font-weight: 600; }
+@keyframes lin { from { opacity: 0; transform: translateY(4px); } }
+.l-progress { height: 4px; border-radius: 2px; background: #1d1f23; overflow: hidden; }
+.l-progress i { display: block; height: 100%; background: #f87171; transition: width 0.4s; }
+.l-fire { position: absolute; z-index: 3; top: 16px; right: 16px; background: #dc2626; color: #fff; font-weight: 700; font-size: 12px; letter-spacing: 0.08em; padding: 7px 12px; border-radius: 999px; box-shadow: 0 6px 20px rgba(220, 38, 38, 0.45); }

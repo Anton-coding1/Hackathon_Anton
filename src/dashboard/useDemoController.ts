@@ -3,12 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Building, FailurePassport, Repair, RepairAudit, Scenario, TestResult } from "@/contracts/types";
 import type { BuildingPreset } from "@/data/buildings";
-import { addedConnections, auditRepair, certify, simulate, withConnection, withConnections, type Certificate } from "@/engine";
+import { addedConnections, auditRepair, certify, describeBlocked, occupantWeights, simulate, withConnection, withConnections, type Certificate } from "@/engine";
 import { DEFAULT_RATES, withModelledCost, type CostEstimate, type CostRates } from "@/cost/costModel";
 import { fallbackAttack, fallbackRepair, repairKind } from "./fallbackAgents";
 
 export type Source = "gemini" | "fallback" | "judge" | "scripted";
-export type Phase = "idle" | "attacking" | "attacked" | "defending" | "proposed" | "auditing" | "approval" | "accepted" | "rejected";
+export type Phase = "idle" | "alarm" | "sweeping" | "attacking" | "attacked" | "defending" | "proposed" | "auditing" | "approval" | "accepted" | "rejected";
 export type LogEntry = { id: number; at: number; role: "attacker" | "defender" | "judge" | "manual" | "system"; text: string; tone?: "bad" | "good" | "warn" | "ai" };
 export type PassportMeta = { createdAt: number; source: Source; attempts: number };
 export type GeminiStatus = { checked: boolean; configured: boolean; model: string; fastModel?: string };
@@ -62,6 +62,11 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
   const [fixes, setFixes] = useState<Fix[]>([]);
   const [report, setReport] = useState<Report | null>(null);
   const [demoRunning, setDemoRunning] = useState(false);
+  const [alarm, setAlarm] = useState(false);
+  const alarmRef = useRef(false);
+  alarmRef.current = alarm;
+  const [preview, setPreview] = useState<{ scenario: Scenario; result: TestResult } | null>(null);
+  const [sweep, setSweep] = useState<{ index: number; total: number; label: string; ok: boolean; trapped: number; title: string } | null>(null);
   const [approval, setApproval] = useState<{ proposal: NonNullable<Proposal>; scenarioName: string; resolve: (ok: boolean) => void } | null>(null);
   const logId = useRef(0);
   const runToken = useRef(0);
@@ -69,12 +74,12 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
   /** Applies the emergency-lift assumption on top of any scenario. */
   const effective = useCallback(
     (s: Scenario, b: Building = building): Scenario => {
-      if (!constraints.liftsRecalled) return s;
+      if (!constraints.liftsRecalled && !alarm) return s;
       const lifts = recalledLifts(b).filter((id) => !s.blockedConnectionIds.includes(id));
       if (!lifts.length) return s;
       return { id: `${s.id}+LIFTS_RECALLED`, name: `${s.name} · lifts recalled`, blockedConnectionIds: [...s.blockedConnectionIds, ...lifts].sort() };
     },
-    [building, constraints.liftsRecalled],
+    [building, constraints.liftsRecalled, alarm],
   );
 
   const scenario = useMemo(() => effective(rawScenario), [effective, rawScenario]);
@@ -83,8 +88,8 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
   const budgetLeft = constraints.budget - spent;
   // Live exhaustive check of every combination of up to `tolerance` failures.
   const certificate: Certificate = useMemo(
-    () => certify(building, constraints.tolerance, constraints.liftsRecalled ? recalledLifts(building) : []),
-    [building, constraints.tolerance, constraints.liftsRecalled],
+    () => certify(building, constraints.tolerance, constraints.liftsRecalled || alarm ? recalledLifts(building) : [], { skipEvacuationLifts: true }),
+    [building, constraints.tolerance, constraints.liftsRecalled, alarm],
   );
 
   // Everything async reads the latest state from here, so manual steps and loops share one implementation.
@@ -453,7 +458,7 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
     await wait(2600);
     if (token !== runToken.current) return;
     const con = S.current.constraints;
-    const certificate = certify(S.current.building, con.tolerance, con.liftsRecalled ? recalledLifts(S.current.building) : []);
+    const certificate = certify(S.current.building, con.tolerance, con.liftsRecalled || alarmRef.current ? recalledLifts(S.current.building) : [], { skipEvacuationLifts: true });
     setReport({ status: certificate.faultFree ? "fault-free" : "stopped", certificate, fixes: S.current.fixes, totalCost: S.current.spent, remaining: certificate.failures[0]?.scenario, at: Date.now() });
     } finally {
       setDemoRunning(false);
@@ -471,7 +476,8 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
     autopilotBusy.current = true;
     (async () => {
       const con = S.current.constraints;
-      const lifts = () => (con.liftsRecalled ? recalledLifts(S.current.building) : []);
+      const lifts = () => (con.liftsRecalled || alarmRef.current ? recalledLifts(S.current.building) : []);
+      const OPTS = { skipEvacuationLifts: true };
       say("system", `Autopilot engaged. Target: no combination of up to ${con.tolerance} failure(s) strands anyone. The attacker invents blockages; the engine sweeps every combination before signing off.`, "ai");
       let status: Report["status"] = "stopped";
       let remaining: Scenario | undefined;
@@ -479,7 +485,7 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
       for (let round = 1; round <= 24; round++) {
         await wait(700);
         if (!autopilotRef.current) break;
-        const cert = certify(S.current.building, con.tolerance, lifts());
+        const cert = certify(S.current.building, con.tolerance, lifts(), OPTS);
         let r: "hardened" | "repaired" | "stuck" | "cancelled";
         if (round === 1 || (cert.faultFree && !finalPass)) {
           // Lead brain: Argon (or the built-in attacker) invents the blockage itself.
@@ -497,12 +503,16 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
           status = "fault-free";
           break;
         } else {
-          // Follow-ups: the exhaustive sweep finds the next weakness; a fast subagent fixes it.
-          const f = cert.failures[0];
+          // Follow-ups: the exhaustive sweep finds the next weakness (most people at risk first); a fast subagent fixes it.
+          const w = occupantWeights(S.current.building);
+          const people = (ids: string[]) => ids.reduce((acc, id) => acc + (w[id] ?? 1), 0);
+          const minK = cert.failures[0].scenario.blockedConnectionIds.length;
+          const f = [...cert.failures].filter((x) => x.scenario.blockedConnectionIds.length === minK).sort((a, b) => people(b.result.unreachableOccupantIds) - people(a.result.unreachableOccupantIds))[0];
           remaining = f.scenario;
-          say("judge", `Sweep: ${cert.scenariosChecked} combinations checked, ${cert.failures.length} still strand someone. Next: ${f.scenario.blockedConnectionIds.join(" + ")}.`, "warn");
+          const plain = describeBlocked(S.current.building, f.scenario.blockedConnectionIds.filter((id) => !lifts().includes(id)));
+          say("judge", `Sweep: ${cert.scenariosChecked} scenarios checked, ${cert.failures.length} still trap someone. Next: fire blocks ${plain}.`, "warn");
           r = await runLoopRef.current({
-            scenario: { ...f.scenario, name: `${f.scenario.name} (found by exhaustive sweep)` },
+            scenario: { ...f.scenario, name: `Fire blocks ${plain}` },
             reason: `The engine's sweep found that blocking ${f.scenario.blockedConnectionIds.join(" + ")} strands ${f.result.unreachableOccupantIds.join(", ")}.`,
           });
         }
@@ -514,7 +524,8 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
           break;
         }
       }
-      const certificate = certify(S.current.building, con.tolerance, lifts());
+      if (autopilotRef.current && sweepRef.current) await sweepRef.current("Final check: re-testing every blocked path", 3500);
+      const certificate = certify(S.current.building, con.tolerance, lifts(), OPTS);
       if (certificate.faultFree) status = "fault-free";
       setReport({ status, certificate, fixes: S.current.fixes, totalCost: S.current.spent, remaining: certificate.faultFree ? undefined : remaining ?? certificate.failures[0]?.scenario, at: Date.now() });
       say("system", certificate.faultFree ? `Certified fault-free against any ${con.tolerance} failure(s): ${certificate.scenariosChecked} combinations checked, ${S.current.fixes.length} change(s), £${S.current.spent.toLocaleString("en-GB")}.` : "Autopilot finished with failures remaining. See the report.", certificate.faultFree ? "good" : "warn");
@@ -522,6 +533,62 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
       setAutopilot(false);
     })();
   }, [autopilot, say]);
+
+  /** Walks the 3D view through every blocked-path scenario the engine tests. */
+  const runSweep = useCallback(
+    async (title: string, durationMs = 5500): Promise<Certificate> => {
+      const con = S.current.constraints;
+      const b = S.current.building;
+      const lifts = con.liftsRecalled || alarmRef.current ? recalledLifts(b) : [];
+      const cert = certify(b, con.tolerance, lifts, { skipEvacuationLifts: true, collectAll: true });
+      const items = cert.all ?? [];
+      const step = Math.max(30, Math.min(220, Math.floor(durationMs / Math.max(1, items.length))));
+      setPhase("sweeping");
+      say("judge", `${title}: ${items.length} scenarios, each with a different path blocked by fire.`, "ai");
+      let trapped = 0;
+      for (let i = 0; i < items.length; i++) {
+        if (!autopilotRef.current && !alarmRef.current) break;
+        const it = items[i];
+        const ok = it.result.unreachableOccupantIds.length === 0;
+        if (!ok) trapped++;
+        const blocked = it.scenario.blockedConnectionIds.filter((id) => !lifts.includes(id));
+        setPreview(it);
+        setSweep({ index: i + 1, total: items.length, label: blocked.length ? describeBlocked(b, blocked) : "lifts recalled only", ok, trapped, title });
+        await wait(ok ? step : step * 2);
+      }
+      setPreview(null);
+      say("judge", trapped ? `${trapped} of ${items.length} scenarios would trap someone.` : `Everyone can get out in all ${items.length} scenarios.`, trapped ? "bad" : "good");
+      await wait(900);
+      setSweep(null);
+      return cert;
+    },
+    [say],
+  );
+  const sweepRef = useRef(runSweep);
+  sweepRef.current = runSweep;
+
+  /** Normal day → fire alarm → agents test every blocked path → fix → verify → summary. */
+  const activateAlarm = useCallback(async () => {
+    if (autopilotBusy.current) return;
+    setAlarm(true);
+    alarmRef.current = true;
+    setReport(null);
+    setPhase("alarm");
+    say("system", "FIRE ALARM ACTIVATED. Lifts are recalled. The agents will now test what happens if fire blocks each path in turn.", "bad");
+    autopilotRef.current = true;
+    await wait(1300);
+    await runSweep("Testing every blocked path");
+    if (!alarmRef.current) return;
+    setAutopilot(true);
+  }, [runSweep, say]);
+
+  const resetAll = useCallback(() => {
+    setAlarm(false);
+    alarmRef.current = false;
+    setPreview(null);
+    setSweep(null);
+    reset();
+  }, [reset]);
 
   return {
     preset,
@@ -557,6 +624,11 @@ export function useDemoController(preset: BuildingPreset, constraints: Constrain
     setReport,
     demoRunning,
     approval,
+    alarm,
+    preview,
+    sweep,
+    activateAlarm,
+    resetAll,
     autopilot,
     setAutopilot,
     attack,

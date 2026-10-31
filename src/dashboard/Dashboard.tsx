@@ -27,8 +27,8 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
   const stress = useStressTest(c.building, stressOn, constraints.liftsRecalled);
   const logBox = useRef<HTMLDivElement>(null);
   const autoStarted = useRef(false);
-  const startAutopilot = useRef(c.setAutopilot);
-  startAutopilot.current = c.setAutopilot;
+  const startAutopilot = useRef((_: boolean) => {});
+  startAutopilot.current = () => void c.activateAlarm();
   useEffect(() => {
     if (!autoplay || autoStarted.current || !c.gemini.checked) return;
     autoStarted.current = true;
@@ -40,7 +40,7 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
     if (el) el.scrollTop = el.scrollHeight;
   }, [c.log.length]);
 
-  const focus = c.autopilot || c.demoRunning;
+  const focus = c.autopilot || c.demoRunning || !!c.sweep || c.phase === "alarm";
   const lastLog = c.log[c.log.length - 1];
   const activity: Activity = c.phase === "attacking" ? "attacking" : c.phase === "defending" ? "defending" : c.phase === "auditing" ? "auditing" : "idle";
 
@@ -83,7 +83,9 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
   );
 
   const statusText = {
-    idle: "Ready",
+    idle: c.alarm ? "Fire alarm active" : "Normal day",
+    alarm: "Fire alarm activated",
+    sweeping: c.sweep?.title ?? "Testing blocked paths",
     attacking: "Attacker searching",
     attacked: c.result.unreachableOccupantIds.length ? "Failure found" : "Scenario tested",
     defending: "Defender designing",
@@ -142,10 +144,9 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
       <main className={`stage ${focus ? "is-focus" : ""}`}>
         <BuildingScene
           building={c.building}
-          scenario={c.scenario}
-          result={c.result}
+          scenario={c.preview?.scenario ?? c.scenario}
+          result={c.preview?.result ?? c.result}
           plan={preset.plan}
-          onConnectionClick={c.toggleConnection}
           addedConnectionIds={c.addedIds}
           proposal={proposalConn}
           activity={activity}
@@ -158,13 +159,36 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
         <div className="viewport-tag">
           <b>3D model</b> · {exploded ? "exploded axonometric" : "stacked"} · {stress.done ? `${stress.evaluated.toLocaleString("en-GB")} stress scenarios checked` : `${(stress.perSecond || 0).toLocaleString("en-GB")} scenarios/s`}
         </div>
+        {c.alarm && (
+          <div className="fire-banner">
+            <span className="fire-dot" />
+            Fire alarm activated · lifts recalled · AI agents testing every escape route
+          </div>
+        )}
+        {!c.alarm && !focus && (
+          <div className="normal-banner">
+            <span /> Normal day · {c.result.totalCount} people tracked
+          </div>
+        )}
         {focus && (
           <div className="focus-hud">
             <span className={`hud-dot phase-${c.phase}`} />
             <div className="hud-text">
               <b>{statusText}</b>
-              <span>{lastLog?.text}</span>
+              {c.sweep ? (
+                <span>
+                  {c.sweep.index}/{c.sweep.total} · Fire blocks {c.sweep.label} →{" "}
+                  <strong className={c.sweep.ok ? "ok" : "bad"}>{c.sweep.ok ? "another way out ✓" : "someone trapped ✕"}</strong>
+                </span>
+              ) : (
+                <span>{lastLog?.text}</span>
+              )}
             </div>
+            {c.sweep && (
+              <div className="hud-progress">
+                <i style={{ width: `${(100 * c.sweep.index) / c.sweep.total}%` }} />
+              </div>
+            )}
             <div className="hud-stats">
               <span>
                 <b>{c.runs.attacker}</b> attacks
@@ -176,7 +200,7 @@ export function Dashboard({ preset, autoplay = false }: { preset: BuildingPreset
                 <b>£{c.spent.toLocaleString("en-GB")}</b> spent
               </span>
             </div>
-            <button className="hud-stop" onClick={() => c.reset()}>
+            <button className="hud-stop" onClick={() => c.resetAll()}>
               Stop
             </button>
           </div>
@@ -286,14 +310,14 @@ function ReportModal({ c, onDownload, onPlan }: { c: ReturnType<typeof useDemoCo
         </header>
         <div className="report-body">
           <div className={`report-hero ${ok ? "ok" : "bad"}`}>
-            <b>{ok ? "Certified fault-free" : "Not yet fault-free"}</b>
+            <b>{ok ? "Everyone can get out" : "Not everyone can get out yet"}</b>
             <span>
               {ok
-                ? `No combination of up to ${r.certificate.tolerance} blocked connection(s) strands anyone. ${r.certificate.scenariosChecked} combinations checked exhaustively by the engine.`
+                ? `With the fire alarm on and lifts recalled, whichever ${r.certificate.tolerance === 1 ? "path" : `${r.certificate.tolerance} paths`} fire blocks, everyone still has another way out. ${r.certificate.scenariosChecked} scenarios checked exhaustively.`
                 : `${r.certificate.failures.length} combination(s) still strand someone${r.remaining ? `, e.g. ${r.remaining.blockedConnectionIds.join(" + ")}` : ""}. Raise the budget or allow more repair types and run again.`}
             </span>
           </div>
-          <h4>Scenarios the agents found, and what fixed them</h4>
+          <h4>What the agents found, and what fixed it</h4>
           {r.fixes.length === 0 ? (
             <p className="muted">No changes were needed.</p>
           ) : (
@@ -305,7 +329,7 @@ function ReportModal({ c, onDownload, onPlan }: { c: ReturnType<typeof useDemoCo
                     <div>
                       <b>{f.scenario.name}</b>
                       <span>
-                        Blocked {f.scenario.blockedConnectionIds.join(" + ")} → {f.stranded.join(", ")} had no route
+                        {f.stranded.map((id) => c.building.occupants.find((o) => o.id === id)?.label ?? id).join(", ")} would have been trapped
                       </span>
                     </div>
                   </div>

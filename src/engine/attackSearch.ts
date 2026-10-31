@@ -108,21 +108,30 @@ export type Certificate = {
  * (on top of `alwaysBlocked`, e.g. recalled lifts) and reports every combination
  * that strands someone. Fault-free means no such combination exists.
  */
-export function certify(building: Building, tolerance = 1, alwaysBlocked: string[] = []): Certificate {
+export function certify(
+  building: Building,
+  tolerance = 1,
+  alwaysBlocked: string[] = [],
+  opts: { skipEvacuationLifts?: boolean; collectAll?: boolean } = {},
+): Certificate & { all?: AttackFinding[] } {
   assertValid(building);
   const always = [...new Set(alwaysBlocked)].sort(cmp);
-  const ids = building.connections.map((c) => c.id).filter((id) => !always.includes(id)).sort(cmp);
+  // Evacuation lifts sit in protected, fire-separated shafts with secondary power, so a sweep may treat them as not blockable.
+  const protectedIds = new Set(opts.skipEvacuationLifts ? building.connections.filter((c) => c.kind === "lift" && c.evacuationLift).map((c) => c.id) : []);
+  const ids = building.connections.map((c) => c.id).filter((id) => !always.includes(id) && !protectedIds.has(id)).sort(cmp);
   const failures: AttackFinding[] = [];
+  const all: AttackFinding[] = [];
   let checked = 0;
   const visit = (blocked: string[]) => {
-    const all = [...new Set([...blocked, ...always])].sort(cmp);
+    const ids2 = [...new Set([...blocked, ...always])].sort(cmp);
     const scenario: Scenario = {
       id: `SWEEP_${blocked.join("_") || "NONE"}`,
       name: blocked.length ? `Block ${blocked.join(" + ")}${always.length ? " (lifts recalled)" : ""}` : "Lifts recalled",
-      blockedConnectionIds: all,
+      blockedConnectionIds: ids2,
     };
     const result = simulate(building, scenario);
     checked++;
+    if (opts.collectAll) all.push({ scenario, result });
     if (result.unreachableOccupantIds.length) failures.push({ scenario, result });
   };
   if (always.length) visit([]);
@@ -139,5 +148,5 @@ export function certify(building: Building, tolerance = 1, alwaysBlocked: string
       b.result.unreachableOccupantIds.length - a.result.unreachableOccupantIds.length ||
       cmp(a.scenario.id, b.scenario.id),
   );
-  return { tolerance: k, scenariosChecked: checked, faultFree: failures.length === 0, failures };
+  return { tolerance: k, scenariosChecked: checked, faultFree: failures.length === 0, failures, ...(opts.collectAll ? { all } : {}) };
 }
